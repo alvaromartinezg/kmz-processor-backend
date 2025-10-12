@@ -5,9 +5,9 @@
 INPUT_NAME_KMZ = "TEST.kmz"
 INPUT_NAME_KML = "TEST.kml"
 OUTPUT_NAME    = "Exportado.kmz"
-CLOSE_THRESHOLD_M = 50.0    # cerrar lineas a polígono si inicio-fin <= 50 m
-NEAR_M            = 100.0   # radio de selección/recorte desde el polígono o línea
-DENSIFY_STEP_M    = 8.0     # paso de muestreo para recorte (balance precisión/velocidad)
+CLOSE_THRESHOLD_M = 30.0    # cerrar lineas a polígono si inicio-fin <= 30 m
+NEAR_M            = 60.0   # radio de selección/recorte desde el polígono o línea
+DENSIFY_STEP_M    = 30.0     # paso de muestreo para recorte (balance precisión/velocidad)
 
 import os, sys, zipfile, math, re, xml.etree.ElementTree as ET
 from xml.etree.ElementTree import ParseError
@@ -87,6 +87,18 @@ def dist_pt_poly(p, ring):
         d=dist_pt_seg(p,a,b)
         if d<dmin: dmin=d
     return dmin
+
+def bbox_pts_xy(pts_xy):
+    xs=[x for x,y in pts_xy]; ys=[y for x,y in pts_xy]
+    return (min(xs),min(ys),max(xs),max(ys))
+
+def bbox_expand(b, pad):
+    x1,y1,x2,y2=b; return (x1-pad,y1-pad,x2+pad,y2+pad)
+
+def bbox_overlap(a,b):
+    ax1,ay1,ax2,ay2=a; bx1,by1,bx2,by2=b
+    return not (ax2 < bx1 or bx2 < ax1 or ay2 < by1 or by2 < ay1)
+
 
 # ======== NUEVO: distancia punto ↔ polilínea (lista de vértices) ========
 def dist_pt_polyline(p, line_xy):
@@ -263,77 +275,125 @@ def read_lines_from_kmz(kmz_path):
     return lines
 
 # -------------- Densificar + recorte por buffer --------------
-def densify_line_lonlat(pts, step_m, lon0, lat0):
-    """Retorna puntos muestreados a cada step_m."""
+def densify_line_lonlat_window(pts, fwd, inv, step_far, step_near, window_xy, ring_bboxes):
+    """
+    Densifica con paso grande (step_far) salvo cuando el segmento toca
+    la ventana global o alguno de los bboxes de los anillos, donde usa
+    step_near. Soporta window_xy=None y ring_bboxes=[].
+    """
     out=[]
     for i in range(len(pts)-1):
-        (lon1,lat1) = pts[i]
-        (lon2,lat2) = pts[i+1]
-        x1,y1 = equirect_xy(lon1,lat1,lon0,lat0)
-        x2,y2 = equirect_xy(lon2,lat2,lon0,lat0)
-        dx,dy = x2-x1, y2-y1
-        seg_len = math.hypot(dx,dy)
-        if not out:
-            out.append((lon1,lat1))
-        if seg_len==0:
-            continue
-        n = int(seg_len//step_m)
-        for k in range(1, n+1):
-            t = (k*step_m)/seg_len
-            if t>=1: break
-            x = x1 + t*dx; y = y1 + t*dy
-            out.append(inv_equirect_xy(x,y,lon0,lat0))
+        lon1,lat1=pts[i]; lon2,lat2=pts[i+1]
+        x1,y1=fwd(lon1,lat1); x2,y2=fwd(lon2,lat2)
+        seg_bb=(min(x1,x2),min(y1,y2),max(x1,x2),max(y1,y2))
+
+        # --- Guardas: permite window_xy=None y ring_bboxes vacía
+        overlaps_window = True if window_xy is None else bbox_overlap(seg_bb, window_xy)
+        overlaps_any_ring = any(bbox_overlap(seg_bb, rb) for rb in (ring_bboxes or []))
+
+        # Si no hay window ni ring_bboxes, nunca "toca"; usa step_far (en refline pasas far=near)
+        touch = overlaps_window and (not ring_bboxes or overlaps_any_ring)
+
+        step = step_near if touch else step_far
+        dx,dy=x2-x1,y2-y1
+        L=(dx*dx+dy*dy)**0.5
+
+        if not out: out.append((lon1,lat1))
+        if L>0:
+            n = int(L//step)
+            for k in range(1, n+1):
+                t=(k*step)/L
+                if t>=1: break
+                out.append(inv(x1+t*dx, y1+t*dy))
         out.append((lon2,lat2))
     return out
 
+def _equirect_funcs(lon0, lat0):
+    R=6371000.0; c=math.cos(math.radians(lat0))
+    def fwd(lon,lat):  return (math.radians(lon-lon0)*R*c, math.radians(lat-lat0)*R)
+    def inv(x,y):      return (lon0+math.degrees(x/(R*c)), lat0+math.degrees(y/R))
+    return fwd,inv
+
 def clip_line_by_polygons(pts, polygons, near_m):
     """
-    Recorta una línea devolviendo subtramos (listado de listas) donde
-    distancia(polígono) <= near_m o está dentro. Versión basada en SEGMENTOS.
+    Recorta una línea devolviendo subtramos donde
+    distancia(polígono) <= near_m o está dentro.
+    Optimizado: proyección cacheada, bbox global/anillo, densificado adaptativo.
     """
+    if not polygons or len(pts) < 2:
+        return []
+
     # Centro de proyección
-    lons=[lon for ring in polygons for lon,lat in ring]
-    lats=[lat for ring in polygons for lon,lat in ring]
-    lon0=sum(lons)/len(lons); lat0=sum(lats)/len(lats)
+    lons = [lon for ring in polygons for lon, lat in ring]
+    lats = [lat for ring in polygons for lon, lat in ring]
+    lon0 = sum(lons) / len(lons); lat0 = sum(lats) / len(lats)
+    fwd, inv = _equirect_funcs(lon0, lat0)
 
-    # Anillos proyectados
-    rings_xy=[[equirect_xy(lon,lat,lon0,lat0) for lon,lat in ring] for ring in polygons]
+    # Anillos proyectados + bboxes
+    rings_xy = [[fwd(lon, lat) for lon, lat in ring] for ring in polygons]
+    ring_bbs = [bbox_expand(bbox_pts_xy(r), near_m) for r in rings_xy]
 
-    # Densificar línea
-    dense = densify_line_lonlat(pts, DENSIFY_STEP_M, lon0, lat0)
+    # Ventana global (bbox unión)
+    gx1 = min(b[0] for b in ring_bbs); gy1 = min(b[1] for b in ring_bbs)
+    gx2 = max(b[2] for b in ring_bbs); gy2 = max(b[3] for b in ring_bbs)
+    window = (gx1, gy1, gx2, gy2)
+
+    # Rechazo grosero (solo extremos)
+    x1, y1 = fwd(*pts[0]); x2, y2 = fwd(*pts[-1])
+    line_bb = (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
+    if not bbox_overlap(line_bb, window):
+        return []
+
+    # Densificar SOLO donde importa (adaptativo)
+    dense = densify_line_lonlat_window(
+        pts, fwd, inv,
+        step_far=max(24.0, DENSIFY_STEP_M * 1.5),  # p.ej. 24–40 m
+        step_near=DENSIFY_STEP_M,                  # tu valor actual (30 m)
+        window_xy=window,
+        ring_bboxes=ring_bbs
+    )
     if len(dense) < 2:
         return []
 
-    dense_xy=[equirect_xy(lon,lat,lon0,lat0) for lon,lat in dense]
+    # ⬅️ FALTABA ESTA LÍNEA:
+    dense_xy = [fwd(lon, lat) for lon, lat in dense]
 
-    # Clasificar cada punto (dentro/cerca)
-    mask=[]
-    for (x,y) in dense_xy:
-        keep=False
-        for ring in rings_xy:
-            if point_in_poly((x,y), ring) or dist_pt_poly((x,y), ring)<=near_m:
-                keep=True; break
+    # Clasificado rápido (bbox por anillo → corta cálculos caros)
+    mask = []
+    for (x, y) in dense_xy:
+        keep = False
+        for ring, bb in zip(rings_xy, ring_bbs):
+            if not (bb[0] <= x <= bb[2] and bb[1] <= y <= bb[3]):
+                continue
+            if point_in_poly((x, y), ring) or dist_pt_poly((x, y), ring) <= near_m:
+                keep = True
+                break
         mask.append(keep)
 
-    # AGRUPAR POR SEGMENTOS: incluir un segmento si alguno de sus extremos es True
-    segments=[]
-    cur=[]
-    for i in range(len(dense)-1):
-        mx = (dense_xy[i][0] + dense_xy[i+1][0]) / 2.0
-        my = (dense_xy[i][1] + dense_xy[i+1][1]) / 2.0
-        mid_keep = any(point_in_poly((mx,my), ring) or dist_pt_poly((mx,my), ring) <= near_m for ring in rings_xy)
-        use = mask[i] or mask[i+1] or mid_keep
+    # Agrupar por segmentos (usa extremos y punto medio)
+    segments, cur = [], []
+    for i in range(len(dense) - 1):
+        mx = (dense_xy[i][0] + dense_xy[i + 1][0]) * 0.5
+        my = (dense_xy[i][1] + dense_xy[i + 1][1]) * 0.5
 
+        mid_keep = False
+        for ring, bb in zip(rings_xy, ring_bbs):
+            if not (bb[0] <= mx <= bb[2] and bb[1] <= my <= bb[3]):
+                continue
+            if point_in_poly((mx, my), ring) or dist_pt_poly((mx, my), ring) <= near_m:
+                mid_keep = True
+                break
+
+        use = mask[i] or mask[i + 1] or mid_keep
         if use:
             if not cur:
-                cur.append(dense[i])     # arranque del tramo
-            cur.append(dense[i+1])       # extendemos con el siguiente punto
+                cur.append(dense[i])
+            cur.append(dense[i + 1])
         else:
-            if cur:
-                # cerramos tramo actual
-                if len(cur) >= 2:
-                    segments.append(cur)
-                cur = []
+            if cur and len(cur) >= 2:
+                segments.append(cur)
+            cur = []
+
     if cur and len(cur) >= 2:
         segments.append(cur)
 
@@ -346,35 +406,47 @@ def clip_line_by_refline(pts, ref_pts, near_m):
     Recorta una línea devolviendo subtramos donde distancia a la línea de
     referencia <= near_m.
     """
-    # Centro para la proyección: basado en la línea de referencia
-    lon0 = sum(lon for lon,lat in ref_pts)/len(ref_pts)
-    lat0 = sum(lat for lon,lat in ref_pts)/len(ref_pts)
+    # Centro de proyección: basado en la línea de referencia
+    lon0 = sum(lon for lon, lat in ref_pts) / len(ref_pts)
+    lat0 = sum(lat for lon, lat in ref_pts) / len(ref_pts)
+    fwd, inv = _equirect_funcs(lon0, lat0)
 
-    ref_xy = [equirect_xy(lon,lat,lon0,lat0) for lon,lat in ref_pts]
+    ref_xy = [fwd(lon, lat) for lon, lat in ref_pts]
 
-    # Densificar la línea candidata
-    dense = densify_line_lonlat(pts, DENSIFY_STEP_M, lon0, lat0)
-    dense_xy=[equirect_xy(lon,lat,lon0,lat0) for lon,lat in dense]
+    # Densificar candidato (usa la misma función; pasos iguales y sin ventana)
+    dense = densify_line_lonlat_window(
+        pts, fwd, inv,
+        step_far=DENSIFY_STEP_M,
+        step_near=DENSIFY_STEP_M,
+        window_xy=None,
+        ring_bboxes=[]
+    )
+    if len(dense) < 2:
+        return []
+
+    dense_xy = [fwd(lon, lat) for lon, lat in dense]
 
     # Clasificar puntos por distancia a la polilínea de referencia
-    mask=[]
-    for (x,y) in dense_xy:
-        keep = dist_pt_polyline((x,y), ref_xy) <= near_m
+    mask = []
+    for (x, y) in dense_xy:
+        keep = dist_pt_polyline((x, y), ref_xy) <= near_m
         mask.append(keep)
 
     # Subtramos contiguos True
-    segments=[]
-    cur=[]
+    segments = []
+    cur = []
     for idx, keep in enumerate(mask):
         if keep:
             cur.append(dense[idx])
         elif cur:
-            if len(cur)>=2: segments.append(cur)
-            cur=[]
-    if cur and len(cur)>=2:
+            if len(cur) >= 2:
+                segments.append(cur)
+            cur = []
+    if cur and len(cur) >= 2:
         segments.append(cur)
 
     return segments
+
 
 # -------------- Filtrado (clip) de todas las líneas --------------
 def filter_and_clip_lines(lines, polygons, near_m):
@@ -458,8 +530,9 @@ def write_kmz(lines, polygons, out_path, highlight_lines=None):
 
 
     kml_bytes = ET.tostring(kml, encoding="utf-8", xml_declaration=True)
-    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("doc.kml", kml_bytes)
+    with zipfile.ZipFile(out_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=1) as zf:
+     zf.writestr("doc.kml", kml_bytes)
+
 
 def _unique_vertices_count(pts):
     return len({(round(lon, 7), round(lat, 7)) for lon, lat in pts})
