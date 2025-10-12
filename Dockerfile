@@ -18,7 +18,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Código + base
 COPY main.py .
 COPY informative-letters-v3.py .
-COPY DATABASE.kmz .
+COPY Database.kmz .
 
 # Expone el puerto estándar de Cloud Run
 EXPOSE 8080
