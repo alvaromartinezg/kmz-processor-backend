@@ -29,11 +29,13 @@ async def process(test_kmz: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="Sube un archivo .kmz o .kml válido")
 
     # Limpia /tmp
-    for f in ("TEST.kmz", "TEST.kml", "Database.kmz", "Exportado.kmz", "informative-letters-v3.py"):
+    for f in ("TEST.kmz", "TEST.kml", "Transmission Network.kmz", "Exportado.kmz", "informative-letters-v3.py"):
         p = os.path.join(TMP_DIR, f)
         if os.path.exists(p):
-            try: os.remove(p)
-            except: pass
+            try:
+                os.remove(p)
+            except:
+                pass
 
     # Guarda TEST (kmz/kml) en /tmp
     test_dest = os.path.join(TMP_DIR, "TEST.kmz" if filename.lower().endswith(".kmz") else "TEST.kml")
@@ -44,7 +46,10 @@ async def process(test_kmz: UploadFile = File(...)):
     base_src = os.path.join(APP_DIR, "Database.kmz")
     if not os.path.exists(base_src):
         raise HTTPException(status_code=500, detail="Database.kmz no está en el contenedor")
-    shutil.copyfile(base_src, os.path.join(TMP_DIR, "Database.kmz"))
+
+    # 👉 Copia con un nombre compatible con el script
+    base_dest = os.path.join(TMP_DIR, "Transmission Network.kmz")
+    shutil.copyfile(base_src, base_dest)
 
     script_src = os.path.join(APP_DIR, "informative-letters-v3.py")
     if not os.path.exists(script_src):
