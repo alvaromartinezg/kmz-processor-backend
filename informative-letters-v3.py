@@ -480,10 +480,10 @@ def write_kmz(lines, polygons, out_path, highlight_lines=None):
     kml = ET.Element("kml", xmlns=NS["kml"])
     doc = ET.SubElement(kml,"Document")
 
-    # Estilo líneas (negras)
+    # Estilo líneas (azules)
     st_line = ET.SubElement(doc, "Style", id="lineBlack")
     ls = ET.SubElement(st_line, "LineStyle")
-    ET.SubElement(ls, "color").text = "ff000000"
+    ET.SubElement(ls, "color").text = "ffff0000"
     ET.SubElement(ls, "width").text = "3"
 
     # Estilo polígonos (fucsia 50%)
@@ -617,3 +617,4 @@ def main():
 
 if __name__=="__main__":
     main()
+
