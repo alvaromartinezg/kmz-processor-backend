@@ -19,6 +19,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY main.py .
 COPY informative-letters-v3.py .
 COPY Database.kmz .
+COPY Database_Canalizado.kmz .
 
 # Expone el puerto estándar de Cloud Run
 EXPOSE 8080
