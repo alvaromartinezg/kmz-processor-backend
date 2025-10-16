@@ -25,7 +25,7 @@ def health():
 
 # --- nuevo: buscador de base canalizada
 def _find_canalizado_kmz() -> str | None:
-    for name in ["Database_canalizado.kmz", "DATABASE_CANALIZADO.kmz", "Transmission Network Canalizado.kmz"]:
+    for name in ["Database_Canalizado.kmz", "DATABASE_CANALIZADO.kmz", "Transmission Network Canalizado.kmz"]:
         p = os.path.join(APP_DIR, name)
         if os.path.exists(p):
             return p
