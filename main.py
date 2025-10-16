@@ -23,6 +23,14 @@ app.add_middleware(
 def health():
     return "ok"
 
+# --- nuevo: buscador de base canalizada
+def _find_canalizado_kmz() -> str | None:
+    for name in ["Database_canalizado.kmz", "DATABASE_CANALIZADO.kmz", "Transmission Network Canalizado.kmz"]:
+        p = os.path.join(APP_DIR, name)
+        if os.path.exists(p):
+            return p
+    return None
+
 # Respuesta explícita para cualquier OPTIONS (por si un proxy ignora el middleware)
 @app.options("/{path:path}")
 def options_any(path: str):
@@ -66,6 +74,11 @@ async def process_kmz(test_kmz: UploadFile = File(None), file: UploadFile = File
     # Copia insumos desde la RAÍZ del contenedor
     base_src = _find_base_kmz()  # ← 'Database.kmz' en tu repo
     shutil.copyfile(base_src, os.path.join(TMP_DIR, "Transmission Network.kmz"))
+    # Copia opcional de la base CANALIZADA
+    base_can_src = _find_canalizado_kmz()
+    if base_can_src:
+        shutil.copyfile(base_can_src, os.path.join(TMP_DIR, "Transmission Network Canalizado.kmz"))
+
 
     script_src = os.path.join(APP_DIR, "informative-letters-v3.py")
     if not os.path.exists(script_src):
