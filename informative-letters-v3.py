@@ -545,7 +545,7 @@ def write_kmz(lines, polygons, out_path, highlight_lines=None, canalizado_lines=
     if canalizado_lines:
         for idx, (_orig_name, pts) in enumerate(canalizado_lines, start=1):
             pm = ET.SubElement(doc,"Placemark")
-            ET.SubElement(pm,"name").text = f"ruta canalizada {idx}"
+            ET.SubElement(pm,"name").text = f"fibra optica canalizada {idx}"
             ET.SubElement(pm,"styleUrl").text = "#lineGreen"
             ls = ET.SubElement(pm,"LineString")
             ET.SubElement(ls,"coordinates").text = coords_to_text([(lon,lat,0.0) for lon,lat in pts])
@@ -553,7 +553,7 @@ def write_kmz(lines, polygons, out_path, highlight_lines=None, canalizado_lines=
     # Líneas recortadas (seleccionadas)
     for idx, (_orig_name, pts) in enumerate(lines, start=1):
         pm = ET.SubElement(doc,"Placemark")
-        ET.SubElement(pm,"name").text = f"ruta {idx}"
+        ET.SubElement(pm,"name").text = f"fibra optica aerea  {idx}"
         ET.SubElement(pm,"styleUrl").text = "#lineBlue"
         ls = ET.SubElement(pm,"LineString")
         ET.SubElement(ls,"coordinates").text = coords_to_text([(lon,lat,0.0) for lon,lat in pts])
