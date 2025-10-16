@@ -27,9 +27,28 @@ def find_base_kmz():
     cands = [f for f in os.listdir(".")
              if f.lower().endswith(".kmz")
              and "transmission" in f.lower()
-             and "network" in f.lower()]
+             and "network" in f.lower()
+             and "canaliz" not in f.lower()]
     if not cands: return None
     # elige el más grande (suele ser el correcto)
+    cands.sort(key=lambda x: os.path.getsize(x), reverse=True)
+    return cands[0]
+
+def find_canalizado_kmz():
+    # acepta cualquier KMZ que tenga transmission + network + canaliz*
+    cands = [f for f in os.listdir(".")
+             if f.lower().endswith(".kmz")
+             and "transmission" in f.lower()
+             and "network" in f.lower()
+             and "canaliz" in f.lower()]
+    # y también acepta el nombre estándar que deja main.py en /tmp
+    if os.path.exists("Transmission Network Canalizado.kmz"):
+        cands.append("Transmission Network Canalizado.kmz")
+
+    # elimina duplicados
+    cands = list({c.lower(): c for c in cands}.values())
+    if not cands:
+        return None
     cands.sort(key=lambda x: os.path.getsize(x), reverse=True)
     return cands[0]
 
@@ -472,16 +491,13 @@ def filter_and_clip_lines_near_ref(lines, ref_lines, near_m):
     return selected
 
 # -------------- Exportar KMZ con estilos y polígonos --------------
-def write_kmz(lines, polygons, out_path, highlight_lines=None):
+def write_kmz(lines, polygons, out_path, highlight_lines=None, canalizado_lines=None):
     # Estilos:
-    # - Línea negra, grosor 3        => ff000000 (aabbggrr)
-    # - Polígono fucsia 50%          => 80FF00FF
-    # - (NUEVO) Línea fucsia grosor 10 => ffFF00FF
     kml = ET.Element("kml", xmlns=NS["kml"])
     doc = ET.SubElement(kml,"Document")
 
     # Estilo líneas (azules)
-    st_line = ET.SubElement(doc, "Style", id="lineBlack")
+    st_line = ET.SubElement(doc, "Style", id="lineBlue")
     ls = ET.SubElement(st_line, "LineStyle")
     ET.SubElement(ls, "color").text = "ffff0000"
     ET.SubElement(ls, "width").text = "3"
@@ -499,6 +515,12 @@ def write_kmz(lines, polygons, out_path, highlight_lines=None):
     lsf = ET.SubElement(st_line_fx, "LineStyle")
     ET.SubElement(lsf, "color").text = "80FF00FF"
     ET.SubElement(lsf, "width").text = "10"
+
+    #Estilo linea canalizado: Verde
+    st_line_green = ET.SubElement(doc, "Style", id="lineGreen")
+    lsg = ET.SubElement(st_line_green, "LineStyle")
+    ET.SubElement(lsg, "color").text = "ff00ff00"  # verde (aabbggrr)
+    ET.SubElement(lsg, "width").text = "3"
 
     # Polígonos (si hubiera)
     for idx, ring in enumerate(polygons, start=1):
@@ -519,12 +541,20 @@ def write_kmz(lines, polygons, out_path, highlight_lines=None):
             ls = ET.SubElement(pm,"LineString")
             ET.SubElement(ls,"coordinates").text = coords_to_text([(lon,lat,0.0) for lon,lat in pts])
 
+        # NUEVO: Líneas recortadas CANALIZADAS (verdes)
+    if canalizado_lines:
+        for idx, (_orig_name, pts) in enumerate(canalizado_lines, start=1):
+            pm = ET.SubElement(doc,"Placemark")
+            ET.SubElement(pm,"name").text = f"ruta canalizada {idx}"
+            ET.SubElement(pm,"styleUrl").text = "#lineGreen"
+            ls = ET.SubElement(pm,"LineString")
+            ET.SubElement(ls,"coordinates").text = coords_to_text([(lon,lat,0.0) for lon,lat in pts])
+
     # Líneas recortadas (seleccionadas)
-    # Líneas recortadas (seleccionadas) - anonimizar y enumerar
     for idx, (_orig_name, pts) in enumerate(lines, start=1):
         pm = ET.SubElement(doc,"Placemark")
         ET.SubElement(pm,"name").text = f"ruta {idx}"
-        ET.SubElement(pm,"styleUrl").text = "#lineBlack"
+        ET.SubElement(pm,"styleUrl").text = "#lineBlue"
         ls = ET.SubElement(pm,"LineString")
         ET.SubElement(ls,"coordinates").text = coords_to_text([(lon,lat,0.0) for lon,lat in pts])
 
@@ -561,8 +591,13 @@ def main():
     if not base_kmz:
         print("No se encontró ningún KMZ tipo 'Transmission Network' en esta carpeta."); sys.exit(0)
 
+    base_kmz_canal = find_canalizado_kmz()
+
     print(f"[INFO] Input: {input_path}")
     print(f"[INFO] Base:  {base_kmz}")
+
+    if base_kmz_canal:
+        print(f"[INFO] Base CANALIZADA: {base_kmz_canal}")
 
     # 1) Leer TODO del input (en todos los .kml internos):
     ref_lines      = read_lines_from_input(input_path)               # todas las LineString del TEST
@@ -580,19 +615,32 @@ def main():
     if polys:
         print(f"[INFO] Usando {len(polys)} área(s) de impacto (existentes + derivadas de líneas).")
         print("[INFO] Leyendo líneas del KMZ base…")
-        lines = read_lines_from_kmz(base_kmz)   # aquí se aplica el 'antimicroondas' (excluye len(pts)==2)
+        lines = read_lines_from_kmz(base_kmz)   # anti-microondas activo
         print(f"[INFO] Total líneas en base: {len(lines)}")
 
         print(f"[INFO] Filtrando y recortando a ≤{NEAR_M} m del(los) área(s) de impacto…")
         clipped_poly = filter_and_clip_lines(lines, polys, NEAR_M)
         clipped_ref  = filter_and_clip_lines_near_ref(lines, ref_lines, NEAR_M) if ref_lines else []
         clipped      = clipped_poly + clipped_ref
+        print(f"[OK] Tramos seleccionados (base): {len(clipped)}")
 
-        print(f"[OK] Tramos seleccionados: {len(clipped)}")
+        # NUEVO: procesar base canalizada si existe
+        clipped_canal = []
+        if base_kmz_canal:
+            print("[INFO] Leyendo líneas del KMZ base CANALIZADA…")
+            lines_canal = read_lines_from_kmz(base_kmz_canal)
+            print(f"[INFO] Total líneas en base canalizada: {len(lines_canal)}")
+            clipped_poly_c = filter_and_clip_lines(lines_canal, polys, NEAR_M)
+            clipped_ref_c  = filter_and_clip_lines_near_ref(lines_canal, ref_lines, NEAR_M) if ref_lines else []
+            clipped_canal  = clipped_poly_c + clipped_ref_c
+            print(f"[OK] Tramos seleccionados (canalizada): {len(clipped_canal)}")
 
-        # Exporta SIEMPRE las áreas de impacto + líneas recortadas.
-        # Además, si existían líneas de referencia en el input, las dibujo (highlight) para que "se vean".
-        write_kmz(clipped, polys, OUTPUT_NAME, highlight_lines=ref_lines if ref_lines else None)
+        # Exportar ambas capas (negra + verde)
+        write_kmz(
+            clipped, polys, OUTPUT_NAME,
+            highlight_lines=ref_lines if ref_lines else None,
+            canalizado_lines=clipped_canal if clipped_canal else None
+        )
         print(f"[OK] Exportado: {OUTPUT_NAME}")
         return
 
@@ -600,21 +648,34 @@ def main():
     if ref_lines:
         print("[AVISO] No hay polígonos; usaré la(s) LÍNEA(s) de entrada como referencia.")
         print("[INFO] Leyendo líneas del KMZ base…")
-        lines = read_lines_from_kmz(base_kmz)   # 'antimicroondas' activo
+        lines = read_lines_from_kmz(base_kmz)
         print(f"[INFO] Total líneas en base: {len(lines)}")
 
         print(f"[INFO] Filtrando y recortando a ≤{NEAR_M} m de la(s) línea(s) de entrada…")
         clipped = filter_and_clip_lines_near_ref(lines, ref_lines, NEAR_M)
-        print(f"[OK] Tramos seleccionados: {len(clipped)}")
+        print(f"[OK] Tramos seleccionados (base): {len(clipped)}")
 
-        # Exporta: dibuja las líneas de entrada (highlight) + tramos seleccionados
-        write_kmz(clipped, [], OUTPUT_NAME, highlight_lines=ref_lines)
+        # NUEVO: procesar base canalizada si existe
+        clipped_canal = []
+        if base_kmz_canal:
+            print("[INFO] Leyendo líneas del KMZ base CANALIZADA…")
+            lines_canal = read_lines_from_kmz(base_kmz_canal)
+            print(f"[INFO] Total líneas en base canalizada: {len(lines_canal)}")
+            clipped_canal = filter_and_clip_lines_near_ref(lines_canal, ref_lines, NEAR_M)
+            print(f"[OK] Tramos seleccionados (canalizada): {len(clipped_canal)}")
+
+        # Exporta: highlight de entrada + capas recortadas
+        write_kmz(
+            clipped, [], OUTPUT_NAME,
+            highlight_lines=ref_lines,
+            canalizado_lines=clipped_canal if clipped_canal else None
+        )
         print(f"[OK] Exportado: {OUTPUT_NAME}")
         return
+
 
     print("[ERROR] El input no contiene polígonos ni líneas utilizables."); sys.exit(0)
 
 
 if __name__=="__main__":
     main()
-
