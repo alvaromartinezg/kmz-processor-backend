@@ -267,7 +267,7 @@ def close_lines_to_polys(lines, threshold_m):
 
 
 # Leer TODAS las LineString del KMZ base (sin importar carpetas)
-def read_lines_from_kmz(kmz_path):
+def read_lines_from_kmz(kmz_path, skip_two_points=True):
     with zipfile.ZipFile(kmz_path,"r") as zf:
         kmls=[n for n in zf.namelist() if n.lower().endswith(".kml")]
         if not kmls: return []
@@ -283,8 +283,8 @@ def read_lines_from_kmz(kmz_path):
         pts3 = parse_coords(ce.text)
         pts  = [(lon,lat) for lon,lat,_ in pts3]
 
-        # ⛔ Excluir microondas: solo si el KML trae exactamente 2 puntos
-        if len(pts) == 2:
+        # Filtro antimicroondas configurable
+        if skip_two_points and len(pts) == 2:
             continue
 
         name_el = pm.find("kml:name", NS)
@@ -628,7 +628,7 @@ def main():
         clipped_canal = []
         if base_kmz_canal:
             print("[INFO] Leyendo líneas del KMZ base CANALIZADA…")
-            lines_canal = read_lines_from_kmz(base_kmz_canal)
+            lines_canal = read_lines_from_kmz(base_kmz_canal, skip_two_points=False)
             print(f"[INFO] Total líneas en base canalizada: {len(lines_canal)}")
             clipped_poly_c = filter_and_clip_lines(lines_canal, polys, NEAR_M)
             clipped_ref_c  = filter_and_clip_lines_near_ref(lines_canal, ref_lines, NEAR_M) if ref_lines else []
@@ -659,7 +659,7 @@ def main():
         clipped_canal = []
         if base_kmz_canal:
             print("[INFO] Leyendo líneas del KMZ base CANALIZADA…")
-            lines_canal = read_lines_from_kmz(base_kmz_canal)
+            lines_canal = read_lines_from_kmz(base_kmz_canal, skip_two_points=False)
             print(f"[INFO] Total líneas en base canalizada: {len(lines_canal)}")
             clipped_canal = filter_and_clip_lines_near_ref(lines_canal, ref_lines, NEAR_M)
             print(f"[OK] Tramos seleccionados (canalizada): {len(clipped_canal)}")
@@ -679,3 +679,4 @@ def main():
 
 if __name__=="__main__":
     main()
+
