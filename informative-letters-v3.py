@@ -6,8 +6,8 @@ INPUT_NAME_KMZ = "TEST.kmz"
 INPUT_NAME_KML = "TEST.kml"
 OUTPUT_NAME    = "Exportado.kmz"
 CLOSE_THRESHOLD_M = 30.0    # cerrar lineas a polígono si inicio-fin <= 30 m
-NEAR_M            = 60.0   # radio de selección/recorte desde el polígono o línea
-DENSIFY_STEP_M    = 30.0     # paso de muestreo para recorte (balance precisión/velocidad)
+NEAR_M            = 40.0   # radio de selección/recorte desde el polígono o línea
+DENSIFY_STEP_M    = 50.0     # paso de muestreo para recorte (balance precisión/velocidad)
 
 import os, sys, zipfile, math, re, xml.etree.ElementTree as ET
 from xml.etree.ElementTree import ParseError
@@ -679,4 +679,5 @@ def main():
 
 if __name__=="__main__":
     main()
+
 
