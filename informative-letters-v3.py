@@ -357,11 +357,26 @@ def clip_line_by_polygons(pts, polygons, near_m):
     gx2 = max(b[2] for b in ring_bbs); gy2 = max(b[3] for b in ring_bbs)
     window = (gx1, gy1, gx2, gy2)
 
-    # Rechazo grosero (solo extremos)
-    x1, y1 = fwd(*pts[0]); x2, y2 = fwd(*pts[-1])
-    line_bb = (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
-    if not bbox_overlap(line_bb, window):
+    # Rechazo grosero (mejorado): bbox incremental con salida temprana
+    minx = miny = float("inf")
+    maxx = maxy = float("-inf")
+    overlaps = False
+    
+    for lon, lat in pts:
+        x, y = fwd(lon, lat)
+        if x < minx: minx = x
+        if y < miny: miny = y
+        if x > maxx: maxx = x
+        if y > maxy: maxy = y
+    
+        # salida temprana: si ya solapa con window, no sigas escaneando
+        if bbox_overlap((minx, miny, maxx, maxy), window):
+            overlaps = True
+            break
+    
+    if not overlaps:
         return []
+
 
     # Densificar SOLO donde importa (adaptativo)
     dense = densify_line_lonlat_window(
@@ -679,5 +694,6 @@ def main():
 
 if __name__=="__main__":
     main()
+
 
 
