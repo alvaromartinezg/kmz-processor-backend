@@ -6,10 +6,15 @@ INPUT_NAME_KMZ = "TEST.kmz"
 INPUT_NAME_KML = "TEST.kml"
 OUTPUT_NAME    = "Exportado.kmz"
 CLOSE_THRESHOLD_M = 30.0    # cerrar lineas a polígono si inicio-fin <= 30 m
-NEAR_M            = 40.0   # radio de selección/recorte desde el polígono o línea
-DENSIFY_STEP_M    = 50.0     # paso de muestreo para recorte (balance precisión/velocidad)
+NEAR_M            = 40.0    # radio de selección/recorte desde el polígono o línea
+DENSIFY_STEP_M    = 50.0    # paso de muestreo para recorte (balance precisión/velocidad)
 
-import os, sys, zipfile, math, re, xml.etree.ElementTree as ET
+import os
+import sys
+import zipfile
+import math
+import re
+import xml.etree.ElementTree as ET
 from xml.etree.ElementTree import ParseError
 
 # Trabajar siempre en la carpeta del script
@@ -19,33 +24,36 @@ print(f"[INFO] Carpeta de trabajo: {os.getcwd()}")
 
 # Buscar input TEST y base Transmission Network
 def find_input_path():
-    if os.path.exists(INPUT_NAME_KMZ): return INPUT_NAME_KMZ
-    if os.path.exists(INPUT_NAME_KML): return INPUT_NAME_KML
+    if os.path.exists(INPUT_NAME_KMZ):
+        return INPUT_NAME_KMZ
+    if os.path.exists(INPUT_NAME_KML):
+        return INPUT_NAME_KML
     return None
 
 def find_base_kmz():
-    cands = [f for f in os.listdir(".")
-             if f.lower().endswith(".kmz")
-             and "transmission" in f.lower()
-             and "network" in f.lower()
-             and "canaliz" not in f.lower()]
-    if not cands: return None
-    # elige el más grande (suele ser el correcto)
+    cands = [
+        f for f in os.listdir(".")
+        if f.lower().endswith(".kmz")
+        and "transmission" in f.lower()
+        and "network" in f.lower()
+        and "canaliz" not in f.lower()
+    ]
+    if not cands:
+        return None
     cands.sort(key=lambda x: os.path.getsize(x), reverse=True)
     return cands[0]
 
 def find_canalizado_kmz():
-    # acepta cualquier KMZ que tenga transmission + network + canaliz*
-    cands = [f for f in os.listdir(".")
-             if f.lower().endswith(".kmz")
-             and "transmission" in f.lower()
-             and "network" in f.lower()
-             and "canaliz" in f.lower()]
-    # y también acepta el nombre estándar que deja main.py en /tmp
+    cands = [
+        f for f in os.listdir(".")
+        if f.lower().endswith(".kmz")
+        and "transmission" in f.lower()
+        and "network" in f.lower()
+        and "canaliz" in f.lower()
+    ]
     if os.path.exists("Transmission Network Canalizado.kmz"):
         cands.append("Transmission Network Canalizado.kmz")
 
-    # elimina duplicados
     cands = list({c.lower(): c for c in cands}.values())
     if not cands:
         return None
@@ -53,120 +61,133 @@ def find_canalizado_kmz():
     return cands[0]
 
 NS = {"kml": "http://www.opengis.net/kml/2.2"}
-for p,u in NS.items():
-    ET.register_namespace(p if p!="kml" else "", u)
+for p, u in NS.items():
+    ET.register_namespace(p if p != "kml" else "", u)
 
 # ----------------- Utilidades geoespaciales -----------------
 def haversine_m(p1, p2):
-    lon1, lat1 = p1; lon2, lat2 = p2
+    lon1, lat1 = p1
+    lon2, lat2 = p2
     R = 6371000.0
     phi1, phi2 = math.radians(lat1), math.radians(lat2)
     dphi = phi2 - phi1
     dlmb = math.radians(lon2 - lon1)
-    a = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlmb/2)**2
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlmb / 2) ** 2
     return 2 * R * math.asin(math.sqrt(a))
 
-def equirect_xy(lon,lat,lon0,lat0):
-    R=6371000.0
-    x=math.radians(lon-lon0)*R*math.cos(math.radians(lat0))
-    y=math.radians(lat-lat0)*R
-    return (x,y)
+def equirect_xy(lon, lat, lon0, lat0):
+    R = 6371000.0
+    x = math.radians(lon - lon0) * R * math.cos(math.radians(lat0))
+    y = math.radians(lat - lat0) * R
+    return (x, y)
 
-def inv_equirect_xy(x,y,lon0,lat0):
-    R=6371000.0
-    lon = lon0 + math.degrees(x/(R*math.cos(math.radians(lat0))))
-    lat = lat0 + math.degrees(y/R)
-    return (lon,lat)
+def inv_equirect_xy(x, y, lon0, lat0):
+    R = 6371000.0
+    lon = lon0 + math.degrees(x / (R * math.cos(math.radians(lat0))))
+    lat = lat0 + math.degrees(y / R)
+    return (lon, lat)
 
 def point_in_poly(pt, ring):
-    x,y=pt; inside=False
-    n=len(ring)
+    x, y = pt
+    inside = False
+    n = len(ring)
     for i in range(n):
-        x1,y1=ring[i]; x2,y2=ring[(i+1)%n]
-        if ((y1>y)!=(y2>y)):
-            xint=x1+(y-y1)*(x2-x1)/(y2-y1)
-            if xint>x: inside=not inside
+        x1, y1 = ring[i]
+        x2, y2 = ring[(i + 1) % n]
+        if ((y1 > y) != (y2 > y)):
+            xint = x1 + (y - y1) * (x2 - x1) / (y2 - y1)
+            if xint > x:
+                inside = not inside
     return inside
 
-def dist_pt_seg(p,a,b):
-    (px,py),(ax,ay),(bx,by)=p,a,b
-    vx,vy=bx-ax,by-ay; wx,wy=px-ax,py-ay
-    v2=vx*vx+vy*vy
-    if v2==0: return math.hypot(px-ax,py-ay)
-    t=max(0,min(1,(wx*vx+wy*vy)/v2))
-    projx,projy=ax+t*vx,ay+t*vy
-    return math.hypot(px-projx,py-projy)
+def dist_pt_seg(p, a, b):
+    (px, py), (ax, ay), (bx, by) = p, a, b
+    vx, vy = bx - ax, by - ay
+    wx, wy = px - ax, py - ay
+    v2 = vx * vx + vy * vy
+    if v2 == 0:
+        return math.hypot(px - ax, py - ay)
+    t = max(0, min(1, (wx * vx + wy * vy) / v2))
+    projx, projy = ax + t * vx, ay + t * vy
+    return math.hypot(px - projx, py - projy)
 
 def dist_pt_poly(p, ring):
-    if point_in_poly(p, ring): return 0.0
-    dmin=float("inf")
-    n=len(ring)
+    if point_in_poly(p, ring):
+        return 0.0
+    dmin = float("inf")
+    n = len(ring)
     for i in range(n):
-        a=ring[i]; b=ring[(i+1)%n]
-        d=dist_pt_seg(p,a,b)
-        if d<dmin: dmin=d
+        a = ring[i]
+        b = ring[(i + 1) % n]
+        d = dist_pt_seg(p, a, b)
+        if d < dmin:
+            dmin = d
     return dmin
 
 def bbox_pts_xy(pts_xy):
-    xs=[x for x,y in pts_xy]; ys=[y for x,y in pts_xy]
-    return (min(xs),min(ys),max(xs),max(ys))
+    xs = [x for x, y in pts_xy]
+    ys = [y for x, y in pts_xy]
+    return (min(xs), min(ys), max(xs), max(ys))
 
 def bbox_expand(b, pad):
-    x1,y1,x2,y2=b; return (x1-pad,y1-pad,x2+pad,y2+pad)
+    x1, y1, x2, y2 = b
+    return (x1 - pad, y1 - pad, x2 + pad, y2 + pad)
 
-def bbox_overlap(a,b):
-    ax1,ay1,ax2,ay2=a; bx1,by1,bx2,by2=b
+def bbox_overlap(a, b):
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
     return not (ax2 < bx1 or bx2 < ax1 or ay2 < by1 or by2 < ay1)
 
-
-# ======== NUEVO: distancia punto ↔ polilínea (lista de vértices) ========
+# ======== distancia punto ↔ polilínea ========
 def dist_pt_polyline(p, line_xy):
     dmin = float("inf")
-    for i in range(len(line_xy)-1):
-        d = dist_pt_seg(p, line_xy[i], line_xy[i+1])
-        if d < dmin: dmin = d
+    for i in range(len(line_xy) - 1):
+        d = dist_pt_seg(p, line_xy[i], line_xy[i + 1])
+        if d < dmin:
+            dmin = d
     return dmin
 
 # ----------------- Lectura/parseo KML/KMZ -----------------
 def parse_coords(text):
-    out=[]
+    out = []
     for tok in (text or "").strip().split():
-        parts=tok.split(",")
-        if len(parts)>=2:
-            lon=float(parts[0]); lat=float(parts[1])
-            alt=float(parts[2]) if len(parts)>2 and parts[2]!="" else 0.0
-            out.append((lon,lat,alt))
+        parts = tok.split(",")
+        if len(parts) >= 2:
+            lon = float(parts[0])
+            lat = float(parts[1])
+            alt = float(parts[2]) if len(parts) > 2 and parts[2] != "" else 0.0
+            out.append((lon, lat, alt))
     return out
 
 def coords_to_text(coords):
-    return " ".join(f"{lon},{lat},{alt:g}" for lon,lat,alt in coords)
+    return " ".join(f"{lon},{lat},{alt:g}" for lon, lat, alt in coords)
 
 def safe_parse_kml(data: bytes):
-    # Parser robusto: agrega xmlns:* faltantes y evita prefijos reservados
     try:
         return ET.fromstring(data)
     except ParseError:
         text = data.decode("utf-8", errors="replace")
-        m = re.search(r"<\s*kml\b[^>]*>", text, flags=re.IGNORECASE|re.DOTALL)
-        if not m: raise
+        m = re.search(r"<\s*kml\b[^>]*>", text, flags=re.IGNORECASE | re.DOTALL)
+        if not m:
+            raise
         open_tag = m.group(0)
 
         declared = set(re.findall(r'xmlns:([A-Za-z_][\w\-.]*)=', open_tag))
-        used_in_tags  = set(re.findall(r'</?\s*([A-Za-z_][\w\-.]*):[A-Za-z_][\w\-.]*', text))
+        used_in_tags = set(re.findall(r'</?\s*([A-Za-z_][\w\-.]*):[A-Za-z_][\w\-.]*', text))
         used_in_attrs = set(re.findall(r'\s(?!xmlns:)([A-Za-z_][\w\-.]*):[A-Za-z_][\w\-.]*=', text))
         used = used_in_tags | used_in_attrs
-        skip = {"kml","xml","xmlns"}
+        skip = {"kml", "xml", "xmlns"}
 
-        # comunes
         if "gx" in used and "gx" not in declared:
             open_tag = open_tag[:-1] + ' xmlns:gx="http://www.google.com/kml/ext/2.2">'
             declared.add("gx")
         if "atom" in used and "atom" not in declared:
             open_tag = open_tag[:-1] + ' xmlns:atom="http://www.w3.org/2005/Atom">'
             declared.add("atom")
-        # el resto dummy
+
         for pref in sorted(used):
-            if pref in skip or pref in declared: continue
+            if pref in skip or pref in declared:
+                continue
             open_tag = open_tag[:-1] + f' xmlns:{pref}="urn:autofix:{pref}">'
             declared.add(pref)
 
@@ -174,176 +195,200 @@ def safe_parse_kml(data: bytes):
         try:
             return ET.fromstring(fixed.encode("utf-8"))
         except ParseError:
-            # Plan B: eliminar prefijos problemáticos
-            fixed = re.sub(r'</?\s*([A-Za-z_][\w\-.]*):', lambda mo: mo.group(0).replace(mo.group(1)+":",""), fixed)
-            fixed = re.sub(r'\s(?!xmlns:)([A-Za-z_][\w\-.]*):([A-Za-z_][\w\-.]*)=', r' \2=', fixed)
+            fixed = re.sub(
+                r'</?\s*([A-Za-z_][\w\-.]*):',
+                lambda mo: mo.group(0).replace(mo.group(1) + ":", ""),
+                fixed
+            )
+            fixed = re.sub(
+                r'\s(?!xmlns:)([A-Za-z_][\w\-.]*):([A-Za-z_][\w\-.]*)=',
+                r' \2=',
+                fixed
+            )
             return ET.fromstring(fixed.encode("utf-8"))
 
 def read_kml_root(path):
     if path.lower().endswith(".kmz"):
-        with zipfile.ZipFile(path,"r") as zf:
-            kmls=[n for n in zf.namelist() if n.lower().endswith(".kml")]
-            if not kmls: raise FileNotFoundError("KMZ sin KML interno")
-            chosen=next((n for n in kmls if os.path.basename(n).lower()=="doc.kml"), kmls[0])
-            data=zf.read(chosen)
+        with zipfile.ZipFile(path, "r") as zf:
+            kmls = [n for n in zf.namelist() if n.lower().endswith(".kml")]
+            if not kmls:
+                raise FileNotFoundError("KMZ sin KML interno")
+            chosen = next((n for n in kmls if os.path.basename(n).lower() == "doc.kml"), kmls[0])
+            data = zf.read(chosen)
             return safe_parse_kml(data)
     else:
-        with open(path,"rb") as f:
+        with open(path, "rb") as f:
             return safe_parse_kml(f.read())
 
-# Polígonos desde input (usa outerBoundary; convierte líneas cerrables)
+def read_all_kml_roots(path):
+    roots = []
+    if path.lower().endswith(".kmz"):
+        with zipfile.ZipFile(path, "r") as zf:
+            kmls = [n for n in zf.namelist() if n.lower().endswith(".kml")]
+            if not kmls:
+                raise FileNotFoundError("KMZ sin KML interno")
+            for name in kmls:
+                roots.append(safe_parse_kml(zf.read(name)))
+    else:
+        with open(path, "rb") as f:
+            roots.append(safe_parse_kml(f.read()))
+    return roots
+
+# Polígonos desde input
 def polygons_from_input(path):
     root = read_kml_root(path)
-    polys=[]
+    polys = []
 
-    # 1) Tomar polígonos existentes (outerBoundary)
     for lr in root.findall(".//kml:Polygon/kml:outerBoundaryIs/kml:LinearRing", NS):
         coords_el = lr.find("kml:coordinates", NS)
-        if coords_el is None: continue
-        pts = [(lon,lat) for lon,lat,_ in parse_coords(coords_el.text)]
-        if len(pts)>=3:
-            if pts[0]!=pts[-1]: pts.append(pts[0])
-            if len(pts)>=4: polys.append(pts)
+        if coords_el is None:
+            continue
+        pts = [(lon, lat) for lon, lat, _ in parse_coords(coords_el.text)]
+        if len(pts) >= 3:
+            if pts[0] != pts[-1]:
+                pts.append(pts[0])
+            if len(pts) >= 4:
+                polys.append(pts)
 
-    # 2) Convertir LineString cerrables (inicio-fin <= CLOSE_THRESHOLD_M) a polígono
     for ls in root.findall(".//kml:LineString", NS):
         coords_el = ls.find("kml:coordinates", NS)
-        if coords_el is None: continue
+        if coords_el is None:
+            continue
         pts3 = parse_coords(coords_el.text)
-        pts  = [(lon,lat) for lon,lat,_ in pts3]
+        pts = [(lon, lat) for lon, lat, _ in pts3]
         if len(pts) >= 2:
             d = haversine_m(pts[0], pts[-1])
             if d <= CLOSE_THRESHOLD_M:
                 ring = list(pts)
-                if ring[0]!=ring[-1]: ring.append(ring[0])
-                if len(ring)>=4: polys.append(ring)
+                if ring[0] != ring[-1]:
+                    ring.append(ring[0])
+                if len(ring) >= 4:
+                    polys.append(ring)
 
     return polys
 
-# ======== NUEVO: Leer LÍNEAS desde el input (sin exigir 3 vértices) ========
-    def read_lines_from_input(path):
-        roots = read_all_kml_roots(path)
-        lines=[]
-        for root in roots:
-            for pm in root.findall(".//kml:Placemark", NS):
-                ls = pm.find(".//kml:LineString", NS)
-                if ls is None:
-                    continue
-                ce = ls.find("kml:coordinates", NS)
-                if ce is None:
-                    continue
-                pts3 = parse_coords(ce.text)
-                pts  = [(lon,lat) for lon,lat,_ in pts3]
-                if len(pts) < 2:
-                    continue
-                name_el = pm.find("kml:name", NS)
-                name = name_el.text if name_el is not None else "linea_entrada"
-                lines.append((name, pts))
-        return lines
+# ======== Leer líneas desde input ========
+def read_lines_from_input(path):
+    roots = read_all_kml_roots(path)
+    lines = []
+    for root in roots:
+        for pm in root.findall(".//kml:Placemark", NS):
+            ls = pm.find(".//kml:LineString", NS)
+            if ls is None:
+                continue
+            ce = ls.find("kml:coordinates", NS)
+            if ce is None:
+                continue
+            pts3 = parse_coords(ce.text)
+            pts = [(lon, lat) for lon, lat, _ in pts3]
+            if len(pts) < 2:
+                continue
+            name_el = pm.find("kml:name", NS)
+            name = name_el.text if name_el is not None else "linea_entrada"
+            lines.append((name, pts))
+    return lines
 
+def merge_fragmented_lines(lines, endpoint_threshold_m=3.0):
+    """
+    Une líneas fragmentadas si sus extremos están muy cerca entre sí.
+    Ignora entradas inválidas o con menos de 2 puntos.
+    """
+    if not lines:
+        return []
 
-    def merge_fragmented_lines(lines, endpoint_threshold_m=3.0):
-        """
-        Une líneas fragmentadas si sus extremos están muy cerca entre sí.
-        Soporta unión:
-          - fin -> inicio
-          - fin -> fin   (invierte la segunda)
-          - inicio -> fin
-          - inicio -> inicio (invierte la segunda)
-        Ignora entradas inválidas o sin suficientes puntos.
-        """
-        if not lines:
-            return []
-    
-        clean_lines = []
-        for item in lines:
-            if not item or len(item) != 2:
-                continue
-            name, pts = item
-            if not isinstance(pts, list) or len(pts) < 2:
-                continue
-            clean_lines.append((name, pts))
-    
-        if not clean_lines:
-            return []
-    
-        used = [False] * len(clean_lines)
-        merged = []
-    
-        def endpoints_close(p1, p2):
-            return haversine_m(p1, p2) <= endpoint_threshold_m
-    
-        for i in range(len(clean_lines)):
-            if used[i]:
-                continue
-    
-            name_i, pts_i = clean_lines[i]
-            if len(pts_i) < 2:
-                used[i] = True
-                continue
-    
-            current = pts_i[:]
+    clean_lines = []
+    for item in lines:
+        if not item or len(item) != 2:
+            continue
+        name, pts = item
+        if not isinstance(pts, list) or len(pts) < 2:
+            continue
+        clean_lines.append((name, pts))
+
+    if not clean_lines:
+        return []
+
+    used = [False] * len(clean_lines)
+    merged = []
+
+    def endpoints_close(p1, p2):
+        return haversine_m(p1, p2) <= endpoint_threshold_m
+
+    for i in range(len(clean_lines)):
+        if used[i]:
+            continue
+
+        name_i, pts_i = clean_lines[i]
+        if len(pts_i) < 2:
             used[i] = True
-            changed = True
-    
-            while changed:
-                changed = False
-    
-                for j in range(len(clean_lines)):
-                    if used[j]:
-                        continue
-    
-                    name_j, pts_j = clean_lines[j]
-                    if len(pts_j) < 2 or len(current) < 2:
-                        used[j] = True
-                        continue
-    
-                    a_start, a_end = current[0], current[-1]
-                    b_start, b_end = pts_j[0], pts_j[-1]
-    
-                    if endpoints_close(a_end, b_start):
-                        current.extend(pts_j[1:])
-                        used[j] = True
-                        changed = True
-                        break
-    
-                    elif endpoints_close(a_end, b_end):
-                        current.extend(list(reversed(pts_j[:-1])))
-                        used[j] = True
-                        changed = True
-                        break
-    
-                    elif endpoints_close(a_start, b_end):
-                        current = pts_j[:-1] + current
-                        used[j] = True
-                        changed = True
-                        break
-    
-                    elif endpoints_close(a_start, b_start):
-                        current = list(reversed(pts_j[1:])) + current
-                        used[j] = True
-                        changed = True
-                        break
-    
-            if len(current) >= 2:
-                merged.append((name_i, current))
-    
-        return merged
+            continue
+
+        current = pts_i[:]
+        used[i] = True
+        changed = True
+
+        while changed:
+            changed = False
+
+            for j in range(len(clean_lines)):
+                if used[j]:
+                    continue
+
+                name_j, pts_j = clean_lines[j]
+                if len(pts_j) < 2 or len(current) < 2:
+                    used[j] = True
+                    continue
+
+                a_start, a_end = current[0], current[-1]
+                b_start, b_end = pts_j[0], pts_j[-1]
+
+                if endpoints_close(a_end, b_start):
+                    current.extend(pts_j[1:])
+                    used[j] = True
+                    changed = True
+                    break
+
+                elif endpoints_close(a_end, b_end):
+                    current.extend(list(reversed(pts_j[:-1])))
+                    used[j] = True
+                    changed = True
+                    break
+
+                elif endpoints_close(a_start, b_end):
+                    current = pts_j[:-1] + current
+                    used[j] = True
+                    changed = True
+                    break
+
+                elif endpoints_close(a_start, b_start):
+                    current = list(reversed(pts_j[1:])) + current
+                    used[j] = True
+                    changed = True
+                    break
+
+        if len(current) >= 2:
+            merged.append((name_i, current))
+
+    return merged
+
 def read_polygons_only_from_input(path):
     roots = read_all_kml_roots(path)
-    polys=[]
+    polys = []
     for root in roots:
         for lr in root.findall(".//kml:Polygon/kml:outerBoundaryIs/kml:LinearRing", NS):
             coords_el = lr.find("kml:coordinates", NS)
-            if coords_el is None: continue
-            pts = [(lon,lat) for lon,lat,_ in parse_coords(coords_el.text)]
-            if len(pts)>=3:
-                if pts[0]!=pts[-1]: pts.append(pts[0])
-                if len(pts)>=4: polys.append(pts)
+            if coords_el is None:
+                continue
+            pts = [(lon, lat) for lon, lat, _ in parse_coords(coords_el.text)]
+            if len(pts) >= 3:
+                if pts[0] != pts[-1]:
+                    pts.append(pts[0])
+                if len(pts) >= 4:
+                    polys.append(pts)
     return polys
 
 def close_lines_to_polys(lines, threshold_m):
-    polys=[]
+    polys = []
     for _name, pts in lines:
         if len(pts) >= 2:
             d = haversine_m(pts[0], pts[-1])
@@ -355,25 +400,30 @@ def close_lines_to_polys(lines, threshold_m):
                     polys.append(ring)
     return polys
 
-
-# Leer TODAS las LineString del KMZ base (sin importar carpetas)
+# Leer TODAS las LineString del KMZ base
 def read_lines_from_kmz(kmz_path, skip_two_points=True):
-    with zipfile.ZipFile(kmz_path,"r") as zf:
-        kmls=[n for n in zf.namelist() if n.lower().endswith(".kml")]
-        if not kmls: return []
-        chosen=next((n for n in kmls if os.path.basename(n).lower()=="doc.kml"), kmls[0])
-        data=zf.read(chosen)
-    root=safe_parse_kml(data)
-    lines=[]
+    with zipfile.ZipFile(kmz_path, "r") as zf:
+        kmls = [n for n in zf.namelist() if n.lower().endswith(".kml")]
+        if not kmls:
+            return []
+        chosen = next((n for n in kmls if os.path.basename(n).lower() == "doc.kml"), kmls[0])
+        data = zf.read(chosen)
+
+    root = safe_parse_kml(data)
+    lines = []
     for pm in root.findall(".//kml:Placemark", NS):
         ls = pm.find(".//kml:LineString", NS)
-        if ls is None: continue
+        if ls is None:
+            continue
         ce = ls.find("kml:coordinates", NS)
-        if ce is None: continue
+        if ce is None:
+            continue
         pts3 = parse_coords(ce.text)
-        pts  = [(lon,lat) for lon,lat,_ in pts3]
+        pts = [(lon, lat) for lon, lat, _ in pts3]
 
-        # Filtro antimicroondas configurable
+        if len(pts) < 2:
+            continue
+
         if skip_two_points and len(pts) == 2:
             continue
 
@@ -385,104 +435,99 @@ def read_lines_from_kmz(kmz_path, skip_two_points=True):
 
 # -------------- Densificar + recorte por buffer --------------
 def densify_line_lonlat_window(pts, fwd, inv, step_far, step_near, window_xy, ring_bboxes):
-    """
-    Densifica con paso grande (step_far) salvo cuando el segmento toca
-    la ventana global o alguno de los bboxes de los anillos, donde usa
-    step_near. Soporta window_xy=None y ring_bboxes=[].
-    """
-    out=[]
-    for i in range(len(pts)-1):
-        lon1,lat1=pts[i]; lon2,lat2=pts[i+1]
-        x1,y1=fwd(lon1,lat1); x2,y2=fwd(lon2,lat2)
-        seg_bb=(min(x1,x2),min(y1,y2),max(x1,x2),max(y1,y2))
+    out = []
+    for i in range(len(pts) - 1):
+        lon1, lat1 = pts[i]
+        lon2, lat2 = pts[i + 1]
+        x1, y1 = fwd(lon1, lat1)
+        x2, y2 = fwd(lon2, lat2)
+        seg_bb = (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
 
-        # --- Guardas: permite window_xy=None y ring_bboxes vacía
         overlaps_window = True if window_xy is None else bbox_overlap(seg_bb, window_xy)
         overlaps_any_ring = any(bbox_overlap(seg_bb, rb) for rb in (ring_bboxes or []))
 
-        # Si no hay window ni ring_bboxes, nunca "toca"; usa step_far (en refline pasas far=near)
         touch = overlaps_window and (not ring_bboxes or overlaps_any_ring)
 
         step = step_near if touch else step_far
-        dx,dy=x2-x1,y2-y1
-        L=(dx*dx+dy*dy)**0.5
+        dx, dy = x2 - x1, y2 - y1
+        L = (dx * dx + dy * dy) ** 0.5
 
-        if not out: out.append((lon1,lat1))
-        if L>0:
-            n = int(L//step)
-            for k in range(1, n+1):
-                t=(k*step)/L
-                if t>=1: break
-                out.append(inv(x1+t*dx, y1+t*dy))
-        out.append((lon2,lat2))
+        if not out:
+            out.append((lon1, lat1))
+        if L > 0:
+            n = int(L // step)
+            for k in range(1, n + 1):
+                t = (k * step) / L
+                if t >= 1:
+                    break
+                out.append(inv(x1 + t * dx, y1 + t * dy))
+        out.append((lon2, lat2))
     return out
 
 def _equirect_funcs(lon0, lat0):
-    R=6371000.0; c=math.cos(math.radians(lat0))
-    def fwd(lon,lat):  return (math.radians(lon-lon0)*R*c, math.radians(lat-lat0)*R)
-    def inv(x,y):      return (lon0+math.degrees(x/(R*c)), lat0+math.degrees(y/R))
-    return fwd,inv
+    R = 6371000.0
+    c = math.cos(math.radians(lat0))
+
+    def fwd(lon, lat):
+        return (math.radians(lon - lon0) * R * c, math.radians(lat - lat0) * R)
+
+    def inv(x, y):
+        return (lon0 + math.degrees(x / (R * c)), lat0 + math.degrees(y / R))
+
+    return fwd, inv
 
 def clip_line_by_polygons(pts, polygons, near_m):
-    """
-    Recorta una línea devolviendo subtramos donde
-    distancia(polígono) <= near_m o está dentro.
-    Optimizado: proyección cacheada, bbox global/anillo, densificado adaptativo.
-    """
     if not polygons or len(pts) < 2:
         return []
 
-    # Centro de proyección
     lons = [lon for ring in polygons for lon, lat in ring]
     lats = [lat for ring in polygons for lon, lat in ring]
-    lon0 = sum(lons) / len(lons); lat0 = sum(lats) / len(lats)
+    lon0 = sum(lons) / len(lons)
+    lat0 = sum(lats) / len(lats)
     fwd, inv = _equirect_funcs(lon0, lat0)
 
-    # Anillos proyectados + bboxes
     rings_xy = [[fwd(lon, lat) for lon, lat in ring] for ring in polygons]
     ring_bbs = [bbox_expand(bbox_pts_xy(r), near_m) for r in rings_xy]
 
-    # Ventana global (bbox unión)
-    gx1 = min(b[0] for b in ring_bbs); gy1 = min(b[1] for b in ring_bbs)
-    gx2 = max(b[2] for b in ring_bbs); gy2 = max(b[3] for b in ring_bbs)
+    gx1 = min(b[0] for b in ring_bbs)
+    gy1 = min(b[1] for b in ring_bbs)
+    gx2 = max(b[2] for b in ring_bbs)
+    gy2 = max(b[3] for b in ring_bbs)
     window = (gx1, gy1, gx2, gy2)
 
-    # Rechazo grosero (mejorado): bbox incremental con salida temprana
     minx = miny = float("inf")
     maxx = maxy = float("-inf")
     overlaps = False
-    
+
     for lon, lat in pts:
         x, y = fwd(lon, lat)
-        if x < minx: minx = x
-        if y < miny: miny = y
-        if x > maxx: maxx = x
-        if y > maxy: maxy = y
-    
-        # salida temprana: si ya solapa con window, no sigas escaneando
+        if x < minx:
+            minx = x
+        if y < miny:
+            miny = y
+        if x > maxx:
+            maxx = x
+        if y > maxy:
+            maxy = y
         if bbox_overlap((minx, miny, maxx, maxy), window):
             overlaps = True
             break
-    
+
     if not overlaps:
         return []
 
-
-    # Densificar SOLO donde importa (adaptativo)
     dense = densify_line_lonlat_window(
         pts, fwd, inv,
-        step_far=max(24.0, DENSIFY_STEP_M * 1.5),  # p.ej. 24–40 m
-        step_near=DENSIFY_STEP_M,                  # tu valor actual (30 m)
+        step_far=max(24.0, DENSIFY_STEP_M * 1.5),
+        step_near=DENSIFY_STEP_M,
         window_xy=window,
         ring_bboxes=ring_bbs
     )
     if len(dense) < 2:
         return []
 
-    # ⬅️ FALTABA ESTA LÍNEA:
     dense_xy = [fwd(lon, lat) for lon, lat in dense]
 
-    # Clasificado rápido (bbox por anillo → corta cálculos caros)
     mask = []
     for (x, y) in dense_xy:
         keep = False
@@ -494,7 +539,6 @@ def clip_line_by_polygons(pts, polygons, near_m):
                 break
         mask.append(keep)
 
-    # Agrupar por segmentos (usa extremos y punto medio)
     segments, cur = [], []
     for i in range(len(dense) - 1):
         mx = (dense_xy[i][0] + dense_xy[i + 1][0]) * 0.5
@@ -523,21 +567,14 @@ def clip_line_by_polygons(pts, polygons, near_m):
 
     return segments
 
-
-# ======== NUEVO: Recorte por LÍNEA de referencia ========
+# ======== Recorte por línea de referencia ========
 def clip_line_by_refline(pts, ref_pts, near_m):
-    """
-    Recorta una línea devolviendo subtramos donde distancia a la línea de
-    referencia <= near_m.
-    """
-    # Centro de proyección: basado en la línea de referencia
     lon0 = sum(lon for lon, lat in ref_pts) / len(ref_pts)
     lat0 = sum(lat for lon, lat in ref_pts) / len(ref_pts)
     fwd, inv = _equirect_funcs(lon0, lat0)
 
     ref_xy = [fwd(lon, lat) for lon, lat in ref_pts]
 
-    # Densificar candidato (usa la misma función; pasos iguales y sin ventana)
     dense = densify_line_lonlat_window(
         pts, fwd, inv,
         step_far=DENSIFY_STEP_M,
@@ -550,13 +587,11 @@ def clip_line_by_refline(pts, ref_pts, near_m):
 
     dense_xy = [fwd(lon, lat) for lon, lat in dense]
 
-    # Clasificar puntos por distancia a la polilínea de referencia
     mask = []
     for (x, y) in dense_xy:
         keep = dist_pt_polyline((x, y), ref_xy) <= near_m
         mask.append(keep)
 
-    # Subtramos contiguos True
     segments = []
     cur = []
     for idx, keep in enumerate(mask):
@@ -571,121 +606,93 @@ def clip_line_by_refline(pts, ref_pts, near_m):
 
     return segments
 
-
-# -------------- Filtrado (clip) de todas las líneas --------------
+# -------------- Filtrado --------------
 def filter_and_clip_lines(lines, polygons, near_m):
-    selected=[]
+    selected = []
     for name, pts in lines:
         segs = clip_line_by_polygons(pts, polygons, near_m)
         for j, seg in enumerate(segs, start=1):
-            out_name = name if len(segs)==1 else f"{name} (parte {j})"
+            out_name = name if len(segs) == 1 else f"{name} (parte {j})"
             selected.append((out_name, seg))
     return selected
 
-# ======== NUEVO: Filtrar/recortar por LÍNEAS de referencia ========
 def filter_and_clip_lines_near_ref(lines, ref_lines, near_m):
-    selected=[]
+    selected = []
     for name, pts in lines:
-        parts=[]
+        parts = []
         for ref_name, ref_pts in ref_lines:
             segs = clip_line_by_refline(pts, ref_pts, near_m)
             parts.extend(segs)
         for j, seg in enumerate(parts, start=1):
-            out_name = name if len(parts)==1 else f"{name} (parte {j})"
+            out_name = name if len(parts) == 1 else f"{name} (parte {j})"
             selected.append((out_name, seg))
     return selected
 
-# -------------- Exportar KMZ con estilos y polígonos --------------
+# -------------- Exportar KMZ --------------
 def write_kmz(lines, polygons, out_path, highlight_lines=None, canalizado_lines=None):
-    # Estilos:
     kml = ET.Element("kml", xmlns=NS["kml"])
-    doc = ET.SubElement(kml,"Document")
+    doc = ET.SubElement(kml, "Document")
 
-    # Estilo líneas (azules)
     st_line = ET.SubElement(doc, "Style", id="lineBlue")
     ls = ET.SubElement(st_line, "LineStyle")
     ET.SubElement(ls, "color").text = "ffff0000"
     ET.SubElement(ls, "width").text = "3"
 
-    # Estilo polígonos (fucsia 50%)
     st_poly = ET.SubElement(doc, "Style", id="polyFuchsia")
     pls = ET.SubElement(st_poly, "PolyStyle")
-    ET.SubElement(pls, "color").text = "80FF00FF"  # 50% fucsia
+    ET.SubElement(pls, "color").text = "80FF00FF"
     lsp = ET.SubElement(st_poly, "LineStyle")
     ET.SubElement(lsp, "color").text = "ffFF00FF"
     ET.SubElement(lsp, "width").text = "2"
 
-    # NUEVO: Estilo línea fucsia grosor 10
     st_line_fx = ET.SubElement(doc, "Style", id="lineFuchsia10")
     lsf = ET.SubElement(st_line_fx, "LineStyle")
     ET.SubElement(lsf, "color").text = "80FF00FF"
     ET.SubElement(lsf, "width").text = "10"
 
-    #Estilo linea canalizado: Verde
     st_line_green = ET.SubElement(doc, "Style", id="lineGreen")
     lsg = ET.SubElement(st_line_green, "LineStyle")
-    ET.SubElement(lsg, "color").text = "ff00ff00"  # verde (aabbggrr)
+    ET.SubElement(lsg, "color").text = "ff00ff00"
     ET.SubElement(lsg, "width").text = "3"
 
-    # Polígonos (si hubiera)
     for idx, ring in enumerate(polygons, start=1):
         pm = ET.SubElement(doc, "Placemark")
-        ET.SubElement(pm,"name").text = "Area de impacto"
-        ET.SubElement(pm,"styleUrl").text = "#polyFuchsia"
-        poly = ET.SubElement(pm,"Polygon")
-        obi  = ET.SubElement(poly,"outerBoundaryIs")
-        lr   = ET.SubElement(obi,"LinearRing")
-        ET.SubElement(lr,"coordinates").text = coords_to_text([(lon,lat,0.0) for lon,lat in ring])
+        ET.SubElement(pm, "name").text = "Area de impacto"
+        ET.SubElement(pm, "styleUrl").text = "#polyFuchsia"
+        poly = ET.SubElement(pm, "Polygon")
+        obi = ET.SubElement(poly, "outerBoundaryIs")
+        lr = ET.SubElement(obi, "LinearRing")
+        ET.SubElement(lr, "coordinates").text = coords_to_text([(lon, lat, 0.0) for lon, lat in ring])
 
-    # NUEVO: Dibujar línea(s) de entrada destacadas (fucsia 10)
     if highlight_lines:
         for name, pts in highlight_lines:
-            pm = ET.SubElement(doc,"Placemark")
-            ET.SubElement(pm,"name").text = "Area de impacto"
-            ET.SubElement(pm,"styleUrl").text = "#lineFuchsia10"
-            ls = ET.SubElement(pm,"LineString")
-            ET.SubElement(ls,"coordinates").text = coords_to_text([(lon,lat,0.0) for lon,lat in pts])
+            pm = ET.SubElement(doc, "Placemark")
+            ET.SubElement(pm, "name").text = "Area de impacto"
+            ET.SubElement(pm, "styleUrl").text = "#lineFuchsia10"
+            ls = ET.SubElement(pm, "LineString")
+            ET.SubElement(ls, "coordinates").text = coords_to_text([(lon, lat, 0.0) for lon, lat in pts])
 
-        # NUEVO: Líneas recortadas CANALIZADAS (verdes)
     if canalizado_lines:
         for idx, (_orig_name, pts) in enumerate(canalizado_lines, start=1):
-            pm = ET.SubElement(doc,"Placemark")
-            ET.SubElement(pm,"name").text = f"fibra optica canalizada {idx}"
-            ET.SubElement(pm,"styleUrl").text = "#lineGreen"
-            ls = ET.SubElement(pm,"LineString")
-            ET.SubElement(ls,"coordinates").text = coords_to_text([(lon,lat,0.0) for lon,lat in pts])
+            pm = ET.SubElement(doc, "Placemark")
+            ET.SubElement(pm, "name").text = f"fibra optica canalizada {idx}"
+            ET.SubElement(pm, "styleUrl").text = "#lineGreen"
+            ls = ET.SubElement(pm, "LineString")
+            ET.SubElement(ls, "coordinates").text = coords_to_text([(lon, lat, 0.0) for lon, lat in pts])
 
-    # Líneas recortadas (seleccionadas)
     for idx, (_orig_name, pts) in enumerate(lines, start=1):
-        pm = ET.SubElement(doc,"Placemark")
-        ET.SubElement(pm,"name").text = f"fibra optica aerea  {idx}"
-        ET.SubElement(pm,"styleUrl").text = "#lineBlue"
-        ls = ET.SubElement(pm,"LineString")
-        ET.SubElement(ls,"coordinates").text = coords_to_text([(lon,lat,0.0) for lon,lat in pts])
-
+        pm = ET.SubElement(doc, "Placemark")
+        ET.SubElement(pm, "name").text = f"fibra optica aerea  {idx}"
+        ET.SubElement(pm, "styleUrl").text = "#lineBlue"
+        ls = ET.SubElement(pm, "LineString")
+        ET.SubElement(ls, "coordinates").text = coords_to_text([(lon, lat, 0.0) for lon, lat in pts])
 
     kml_bytes = ET.tostring(kml, encoding="utf-8", xml_declaration=True)
     with zipfile.ZipFile(out_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=1) as zf:
-     zf.writestr("doc.kml", kml_bytes)
-
+        zf.writestr("doc.kml", kml_bytes)
 
 def _unique_vertices_count(pts):
     return len({(round(lon, 7), round(lat, 7)) for lon, lat in pts})
-
-def read_all_kml_roots(path):
-    """Devuelve una lista de roots KML. Si es KMZ, incluye *todos* los .kml internos."""
-    roots = []
-    if path.lower().endswith(".kmz"):
-        with zipfile.ZipFile(path, "r") as zf:
-            kmls = [n for n in zf.namelist() if n.lower().endswith(".kml")]
-            if not kmls:
-                raise FileNotFoundError("KMZ sin KML interno")
-            for name in kmls:
-                roots.append(safe_parse_kml(zf.read(name)))
-    else:
-        with open(path, "rb") as f:
-            roots.append(safe_parse_kml(f.read()))
-    return roots
 
 # =========================== MAIN ===========================
 def main():
@@ -707,7 +714,6 @@ def main():
     if base_kmz_canal:
         print(f"[INFO] Base CANALIZADA: {base_kmz_canal}")
 
-    # 1) Leer TODO del input (en todos los .kml internos)
     ref_lines = read_lines_from_input(input_path)
     print(f"[INFO] Líneas de entrada (original): {len(ref_lines)}")
 
@@ -717,9 +723,12 @@ def main():
     closed_polys = close_lines_to_polys(ref_lines, CLOSE_THRESHOLD_M)
     existing_polys = read_polygons_only_from_input(input_path)
 
-    print(f"[INFO] Input trae: lineas={len(ref_lines)} | poligonos_existentes={len(existing_polys)} | lineas_cerrables→poligonos={len(closed_polys)}")
+    print(
+        f"[INFO] Input trae: lineas={len(ref_lines)} | "
+        f"poligonos_existentes={len(existing_polys)} | "
+        f"lineas_cerrables→poligonos={len(closed_polys)}"
+    )
 
-    # 2) Unir todas las áreas de impacto disponibles
     polys = []
     polys.extend(existing_polys)
     polys.extend(closed_polys)
@@ -763,7 +772,6 @@ def main():
         print(f"[OK] Exportado: {OUTPUT_NAME}")
         return
 
-    # 3) Si no hay polígonos, usar líneas de entrada como referencia
     if ref_lines:
         print("[AVISO] No hay polígonos; usaré la(s) LÍNEA(s) de entrada como referencia.")
         print("[INFO] Leyendo líneas del KMZ base…")
@@ -802,9 +810,5 @@ def main():
     print("[ERROR] El input no contiene polígonos ni líneas utilizables.")
     sys.exit(0)
 
-
-if __name__=="__main__":
+if __name__ == "__main__":
     main()
-
-
-
