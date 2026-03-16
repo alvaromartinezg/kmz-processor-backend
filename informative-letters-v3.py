@@ -238,6 +238,76 @@ def read_lines_from_input(path):
             name=name_el.text if name_el is not None else "linea_entrada"
             lines.append((name, pts))
     return lines
+    
+def merge_fragmented_lines(lines, endpoint_threshold_m=3.0):
+    """
+    Une líneas fragmentadas si sus extremos están muy cerca entre sí.
+    Soporta unión:
+      - fin -> inicio
+      - fin -> fin   (invierte la segunda)
+      - inicio -> inicio (invierte la primera)
+      - inicio -> fin
+    """
+    if not lines:
+        return []
+
+    used = [False] * len(lines)
+    merged = []
+
+    def endpoints_close(p1, p2):
+        return haversine_m(p1, p2) <= endpoint_threshold_m
+
+    for i in range(len(lines)):
+        if used[i]:
+            continue
+
+        name_i, pts_i = lines[i]
+        current = pts_i[:]
+        used[i] = True
+        changed = True
+
+        while changed:
+            changed = False
+
+            for j in range(len(lines)):
+                if used[j]:
+                    continue
+
+                name_j, pts_j = lines[j]
+                a_start, a_end = current[0], current[-1]
+                b_start, b_end = pts_j[0], pts_j[-1]
+
+                # Caso 1: fin(A) ≈ inicio(B)
+                if endpoints_close(a_end, b_start):
+                    current.extend(pts_j[1:])
+                    used[j] = True
+                    changed = True
+                    break
+
+                # Caso 2: fin(A) ≈ fin(B) -> invertir B
+                elif endpoints_close(a_end, b_end):
+                    current.extend(list(reversed(pts_j[:-1])))
+                    used[j] = True
+                    changed = True
+                    break
+
+                # Caso 3: inicio(A) ≈ fin(B)
+                elif endpoints_close(a_start, b_end):
+                    current = pts_j[:-1] + current
+                    used[j] = True
+                    changed = True
+                    break
+
+                # Caso 4: inicio(A) ≈ inicio(B) -> invertir B
+                elif endpoints_close(a_start, b_start):
+                    current = list(reversed(pts_j[1:])) + current
+                    used[j] = True
+                    changed = True
+                    break
+
+        merged.append((name_i, current))
+
+    return merged
 
 def read_polygons_only_from_input(path):
     roots = read_all_kml_roots(path)
@@ -601,10 +671,13 @@ def read_all_kml_roots(path):
 def main():
     input_path = find_input_path()
     if not input_path:
-        print("No se encontró TEST.kmz ni TEST.kml en esta carpeta."); sys.exit(0)
+        print("No se encontró TEST.kmz ni TEST.kml en esta carpeta.")
+        sys.exit(0)
+
     base_kmz = find_base_kmz()
     if not base_kmz:
-        print("No se encontró ningún KMZ tipo 'Transmission Network' en esta carpeta."); sys.exit(0)
+        print("No se encontró ningún KMZ tipo 'Transmission Network' en esta carpeta.")
+        sys.exit(0)
 
     base_kmz_canal = find_canalizado_kmz()
 
@@ -614,15 +687,19 @@ def main():
     if base_kmz_canal:
         print(f"[INFO] Base CANALIZADA: {base_kmz_canal}")
 
-    # 1) Leer TODO del input (en todos los .kml internos):
-    ref_lines      = read_lines_from_input(input_path)               # todas las LineString del TEST
-    closed_polys   = close_lines_to_polys(ref_lines, CLOSE_THRESHOLD_M)  # polígonos creados desde líneas (≤50 m)
-    existing_polys = read_polygons_only_from_input(input_path)       # polígonos que ya vienen en TEST
+    # 1) Leer TODO del input (en todos los .kml internos)
+    ref_lines = read_lines_from_input(input_path)
+    print(f"[INFO] Líneas de entrada (original): {len(ref_lines)}")
+
+    ref_lines = merge_fragmented_lines(ref_lines, endpoint_threshold_m=3.0)
+    print(f"[INFO] Líneas de entrada (unificadas): {len(ref_lines)}")
+
+    closed_polys = close_lines_to_polys(ref_lines, CLOSE_THRESHOLD_M)
+    existing_polys = read_polygons_only_from_input(input_path)
 
     print(f"[INFO] Input trae: lineas={len(ref_lines)} | poligonos_existentes={len(existing_polys)} | lineas_cerrables→poligonos={len(closed_polys)}")
 
-    # 2) Usar SIEMPRE todas las áreas de impacto disponibles:
-    #    - Unimos los polígonos existentes + los generados desde líneas cerrables.
+    # 2) Unir todas las áreas de impacto disponibles
     polys = []
     polys.extend(existing_polys)
     polys.extend(closed_polys)
@@ -630,66 +707,80 @@ def main():
     if polys:
         print(f"[INFO] Usando {len(polys)} área(s) de impacto (existentes + derivadas de líneas).")
         print("[INFO] Leyendo líneas del KMZ base…")
-        lines = read_lines_from_kmz(base_kmz)   # anti-microondas activo
+        lines = read_lines_from_kmz(base_kmz)
         print(f"[INFO] Total líneas en base: {len(lines)}")
+
+        lines = merge_fragmented_lines(lines, endpoint_threshold_m=3.0)
+        print(f"[INFO] Total líneas en base (unificadas): {len(lines)}")
 
         print(f"[INFO] Filtrando y recortando a ≤{NEAR_M} m del(los) área(s) de impacto…")
         clipped_poly = filter_and_clip_lines(lines, polys, NEAR_M)
-        clipped_ref  = filter_and_clip_lines_near_ref(lines, ref_lines, NEAR_M) if ref_lines else []
-        clipped      = clipped_poly + clipped_ref
+        clipped_ref = filter_and_clip_lines_near_ref(lines, ref_lines, NEAR_M) if ref_lines else []
+        clipped = clipped_poly + clipped_ref
         print(f"[OK] Tramos seleccionados (base): {len(clipped)}")
 
-        # NUEVO: procesar base canalizada si existe
         clipped_canal = []
         if base_kmz_canal:
             print("[INFO] Leyendo líneas del KMZ base CANALIZADA…")
             lines_canal = read_lines_from_kmz(base_kmz_canal, skip_two_points=False)
             print(f"[INFO] Total líneas en base canalizada: {len(lines_canal)}")
+
+            lines_canal = merge_fragmented_lines(lines_canal, endpoint_threshold_m=3.0)
+            print(f"[INFO] Total líneas en base canalizada (unificadas): {len(lines_canal)}")
+
             clipped_poly_c = filter_and_clip_lines(lines_canal, polys, NEAR_M)
-            clipped_ref_c  = filter_and_clip_lines_near_ref(lines_canal, ref_lines, NEAR_M) if ref_lines else []
-            clipped_canal  = clipped_poly_c + clipped_ref_c
+            clipped_ref_c = filter_and_clip_lines_near_ref(lines_canal, ref_lines, NEAR_M) if ref_lines else []
+            clipped_canal = clipped_poly_c + clipped_ref_c
             print(f"[OK] Tramos seleccionados (canalizada): {len(clipped_canal)}")
 
-        # Exportar ambas capas (negra + verde)
         write_kmz(
-            clipped, polys, OUTPUT_NAME,
+            clipped,
+            polys,
+            OUTPUT_NAME,
             highlight_lines=ref_lines if ref_lines else None,
             canalizado_lines=clipped_canal if clipped_canal else None
         )
         print(f"[OK] Exportado: {OUTPUT_NAME}")
         return
 
-    # 3) Si no hay polígonos de ningún tipo, usar la(s) LÍNEA(s) de entrada como referencia (fallback)
+    # 3) Si no hay polígonos, usar líneas de entrada como referencia
     if ref_lines:
         print("[AVISO] No hay polígonos; usaré la(s) LÍNEA(s) de entrada como referencia.")
         print("[INFO] Leyendo líneas del KMZ base…")
         lines = read_lines_from_kmz(base_kmz)
-        print(f"[INFO] Total líneas en base: {len(lines)}")
+        print(f"[INFO] Total líneas en base (original): {len(lines)}")
+
+        lines = merge_fragmented_lines(lines, endpoint_threshold_m=3.0)
+        print(f"[INFO] Total líneas en base (unificadas): {len(lines)}")
 
         print(f"[INFO] Filtrando y recortando a ≤{NEAR_M} m de la(s) línea(s) de entrada…")
         clipped = filter_and_clip_lines_near_ref(lines, ref_lines, NEAR_M)
         print(f"[OK] Tramos seleccionados (base): {len(clipped)}")
 
-        # NUEVO: procesar base canalizada si existe
         clipped_canal = []
         if base_kmz_canal:
             print("[INFO] Leyendo líneas del KMZ base CANALIZADA…")
             lines_canal = read_lines_from_kmz(base_kmz_canal, skip_two_points=False)
-            print(f"[INFO] Total líneas en base canalizada: {len(lines_canal)}")
+            print(f"[INFO] Total líneas en base canalizada (original): {len(lines_canal)}")
+
+            lines_canal = merge_fragmented_lines(lines_canal, endpoint_threshold_m=3.0)
+            print(f"[INFO] Total líneas en base canalizada (unificadas): {len(lines_canal)}")
+
             clipped_canal = filter_and_clip_lines_near_ref(lines_canal, ref_lines, NEAR_M)
             print(f"[OK] Tramos seleccionados (canalizada): {len(clipped_canal)}")
 
-        # Exporta: highlight de entrada + capas recortadas
         write_kmz(
-            clipped, [], OUTPUT_NAME,
+            clipped,
+            [],
+            OUTPUT_NAME,
             highlight_lines=ref_lines,
             canalizado_lines=clipped_canal if clipped_canal else None
         )
         print(f"[OK] Exportado: {OUTPUT_NAME}")
         return
 
-
-    print("[ERROR] El input no contiene polígonos ni líneas utilizables."); sys.exit(0)
+    print("[ERROR] El input no contiene polígonos ni líneas utilizables.")
+    sys.exit(0)
 
 
 if __name__=="__main__":
