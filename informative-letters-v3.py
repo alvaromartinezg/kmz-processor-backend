@@ -239,75 +239,99 @@ def read_lines_from_input(path):
             lines.append((name, pts))
     return lines
     
-def merge_fragmented_lines(lines, endpoint_threshold_m=3.0):
-    """
-    Une líneas fragmentadas si sus extremos están muy cerca entre sí.
-    Soporta unión:
-      - fin -> inicio
-      - fin -> fin   (invierte la segunda)
-      - inicio -> inicio (invierte la primera)
-      - inicio -> fin
-    """
-    if not lines:
-        return []
-
-    used = [False] * len(lines)
-    merged = []
-
-    def endpoints_close(p1, p2):
-        return haversine_m(p1, p2) <= endpoint_threshold_m
-
-    for i in range(len(lines)):
-        if used[i]:
-            continue
-
-        name_i, pts_i = lines[i]
-        current = pts_i[:]
-        used[i] = True
-        changed = True
-
-        while changed:
-            changed = False
-
-            for j in range(len(lines)):
-                if used[j]:
-                    continue
-
-                name_j, pts_j = lines[j]
-                a_start, a_end = current[0], current[-1]
-                b_start, b_end = pts_j[0], pts_j[-1]
-
-                # Caso 1: fin(A) ≈ inicio(B)
-                if endpoints_close(a_end, b_start):
-                    current.extend(pts_j[1:])
-                    used[j] = True
-                    changed = True
-                    break
-
-                # Caso 2: fin(A) ≈ fin(B) -> invertir B
-                elif endpoints_close(a_end, b_end):
-                    current.extend(list(reversed(pts_j[:-1])))
-                    used[j] = True
-                    changed = True
-                    break
-
-                # Caso 3: inicio(A) ≈ fin(B)
-                elif endpoints_close(a_start, b_end):
-                    current = pts_j[:-1] + current
-                    used[j] = True
-                    changed = True
-                    break
-
-                # Caso 4: inicio(A) ≈ inicio(B) -> invertir B
-                elif endpoints_close(a_start, b_start):
-                    current = list(reversed(pts_j[1:])) + current
-                    used[j] = True
-                    changed = True
-                    break
-
-        merged.append((name_i, current))
-
-    return merged
+    def merge_fragmented_lines(lines, endpoint_threshold_m=3.0):
+        """
+        Une líneas fragmentadas si sus extremos están muy cerca entre sí.
+        Soporta unión:
+          - fin -> inicio
+          - fin -> fin   (invierte la segunda)
+          - inicio -> fin
+          - inicio -> inicio (invierte la segunda)
+        Ignora entradas inválidas o sin suficientes puntos.
+        """
+        if not lines:
+            return []
+    
+        # Filtrar líneas inválidas antes de procesar
+        clean_lines = []
+        for item in lines:
+            if not item or len(item) != 2:
+                continue
+            name, pts = item
+            if not isinstance(pts, list) or len(pts) < 2:
+                continue
+            clean_lines.append((name, pts))
+    
+        if not clean_lines:
+            return []
+    
+        used = [False] * len(clean_lines)
+        merged = []
+    
+        def endpoints_close(p1, p2):
+            return haversine_m(p1, p2) <= endpoint_threshold_m
+    
+        for i in range(len(clean_lines)):
+            if used[i]:
+                continue
+    
+            name_i, pts_i = clean_lines[i]
+            if len(pts_i) < 2:
+                used[i] = True
+                continue
+    
+            current = pts_i[:]
+            used[i] = True
+            changed = True
+    
+            while changed:
+                changed = False
+    
+                for j in range(len(clean_lines)):
+                    if used[j]:
+                        continue
+    
+                    name_j, pts_j = clean_lines[j]
+                    if len(pts_j) < 2 or len(current) < 2:
+                        used[j] = True
+                        continue
+    
+                    a_start, a_end = current[0], current[-1]
+                    b_start, b_end = pts_j[0], pts_j[-1]
+    
+                    # Caso 1: fin(A) ≈ inicio(B)
+                    if endpoints_close(a_end, b_start):
+                        current.extend(pts_j[1:])
+                        used[j] = True
+                        changed = True
+                        break
+    
+                    # Caso 2: fin(A) ≈ fin(B) -> invertir B
+                    elif endpoints_close(a_end, b_end):
+                        current.extend(list(reversed(pts_j[:-1])))
+                        used[j] = True
+                        changed = True
+                        break
+    
+                    # Caso 3: inicio(A) ≈ fin(B)
+                    elif endpoints_close(a_start, b_end):
+                        current = pts_j[:-1] + current
+                        used[j] = True
+                        changed = True
+                        break
+    
+                    # Caso 4: inicio(A) ≈ inicio(B) -> invertir B
+                    elif endpoints_close(a_start, b_start):
+                        current = list(reversed(pts_j[1:])) + current
+                        used[j] = True
+                        changed = True
+                        break
+    
+            # Evitar devolver líneas inválidas
+            if len(current) >= 2:
+                merged.append((name_i, current))
+    
+        return merged
 
 def read_polygons_only_from_input(path):
     roots = read_all_kml_roots(path)
