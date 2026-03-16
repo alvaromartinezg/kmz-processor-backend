@@ -221,25 +221,27 @@ def polygons_from_input(path):
     return polys
 
 # ======== NUEVO: Leer LÍNEAS desde el input (sin exigir 3 vértices) ========
+    def read_lines_from_input(path):
+        roots = read_all_kml_roots(path)
+        lines=[]
+        for root in roots:
+            for pm in root.findall(".//kml:Placemark", NS):
+                ls = pm.find(".//kml:LineString", NS)
+                if ls is None:
+                    continue
+                ce = ls.find("kml:coordinates", NS)
+                if ce is None:
+                    continue
+                pts3 = parse_coords(ce.text)
+                pts  = [(lon,lat) for lon,lat,_ in pts3]
+                if len(pts) < 2:
+                    continue
+                name_el = pm.find("kml:name", NS)
+                name = name_el.text if name_el is not None else "linea_entrada"
+                lines.append((name, pts))
+        return lines
 
-def read_lines_from_input(path):
-    roots = read_all_kml_roots(path)
-    lines=[]
-    for root in roots:
-        for pm in root.findall(".//kml:Placemark", NS):
-            ls = pm.find(".//kml:LineString", NS)
-            if ls is None: continue
-            ce = ls.find("kml:coordinates", NS)
-            if ce is None: continue
-            pts3 = parse_coords(ce.text)
-            pts  = [(lon,lat) for lon,lat,_ in pts3]
-            if len(pts) < 2:
-                continue
-            name_el=pm.find("kml:name", NS)
-            name=name_el.text if name_el is not None else "linea_entrada"
-            lines.append((name, pts))
-    return lines
-    
+
     def merge_fragmented_lines(lines, endpoint_threshold_m=3.0):
         """
         Une líneas fragmentadas si sus extremos están muy cerca entre sí.
@@ -253,7 +255,6 @@ def read_lines_from_input(path):
         if not lines:
             return []
     
-        # Filtrar líneas inválidas antes de procesar
         clean_lines = []
         for item in lines:
             if not item or len(item) != 2:
@@ -300,40 +301,34 @@ def read_lines_from_input(path):
                     a_start, a_end = current[0], current[-1]
                     b_start, b_end = pts_j[0], pts_j[-1]
     
-                    # Caso 1: fin(A) ≈ inicio(B)
                     if endpoints_close(a_end, b_start):
                         current.extend(pts_j[1:])
                         used[j] = True
                         changed = True
                         break
     
-                    # Caso 2: fin(A) ≈ fin(B) -> invertir B
                     elif endpoints_close(a_end, b_end):
                         current.extend(list(reversed(pts_j[:-1])))
                         used[j] = True
                         changed = True
                         break
     
-                    # Caso 3: inicio(A) ≈ fin(B)
                     elif endpoints_close(a_start, b_end):
                         current = pts_j[:-1] + current
                         used[j] = True
                         changed = True
                         break
     
-                    # Caso 4: inicio(A) ≈ inicio(B) -> invertir B
                     elif endpoints_close(a_start, b_start):
                         current = list(reversed(pts_j[1:])) + current
                         used[j] = True
                         changed = True
                         break
     
-            # Evitar devolver líneas inválidas
             if len(current) >= 2:
                 merged.append((name_i, current))
     
         return merged
-
 def read_polygons_only_from_input(path):
     roots = read_all_kml_roots(path)
     polys=[]
