@@ -221,6 +221,7 @@ def polygons_from_input(path):
     return polys
 
 # ======== NUEVO: Leer LÍNEAS desde el input (sin exigir 3 vértices) ========
+
 def read_lines_from_input(path):
     roots = read_all_kml_roots(path)
     lines=[]
