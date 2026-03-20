@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
 # ===== Configuración estándar (no toques nada) =====
 INPUT_NAME_KMZ = "TEST.kmz"
 INPUT_NAME_KML = "TEST.kml"
