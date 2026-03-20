@@ -46,7 +46,13 @@ def _find_base_kmz() -> str:
     listing = ", ".join(sorted(os.listdir(APP_DIR)))
     raise HTTPException(500, f"No se encontró el KMZ base. Archivos en raíz: {listing}")
 
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 @app.post("/process")
+async def process_kmz(
+    test_kmz: UploadFile = File(None),
+    file: UploadFile = File(None),
+    mode: str = Form("both")
+):
 async def process_kmz(test_kmz: UploadFile = File(None), file: UploadFile = File(None)):
     # Acepta ambos nombres de campo (tu web nueva usa 'test_kmz'; otras podrían usar 'file')
     f = test_kmz or file
@@ -58,7 +64,14 @@ async def process_kmz(test_kmz: UploadFile = File(None), file: UploadFile = File
         raise HTTPException(400, "Sube un .kmz o .kml válido.")
 
     # Limpia /tmp
-    for n in ("TEST.kmz","TEST.kml","Transmission Network.kmz","Exportado.kmz","informative-letters-v3.py"):
+        for n in (
+        "TEST.kmz",
+        "TEST.kml",
+        "Transmission Network.kmz",
+        "Transmission Network Canalizado.kmz",
+        "Exportado.kmz",
+        "informative-letters-v3.py"
+    ):
         p = os.path.join(TMP_DIR, n)
         try:
             if os.path.exists(p):
@@ -71,13 +84,36 @@ async def process_kmz(test_kmz: UploadFile = File(None), file: UploadFile = File
     with open(test_dest, "wb") as out:
         out.write(await f.read())
 
-    # Copia insumos desde la RAÍZ del contenedor
-    base_src = _find_base_kmz()  # ← 'Database.kmz' en tu repo
-    shutil.copyfile(base_src, os.path.join(TMP_DIR, "Transmission Network.kmz"))
-    # Copia opcional de la base CANALIZADA
+    # Normalizar modo recibido desde frontend
+    mode = (mode or "both").strip().lower()
+    if mode not in {"both", "general", "canalizado"}:
+        raise HTTPException(400, f"Modo inválido: {mode}")
+
+    base_src = _find_base_kmz()
     base_can_src = _find_canalizado_kmz()
-    if base_can_src:
-        shutil.copyfile(base_can_src, os.path.join(TMP_DIR, "Transmission Network Canalizado.kmz"))
+
+    # both = base general + canalizado
+    if mode == "both":
+        if not base_src and not base_can_src:
+            raise HTTPException(500, "No se encontró ninguna base KMZ en el contenedor.")
+
+        if base_src:
+            shutil.copyfile(base_src, os.path.join(TMP_DIR, "Transmission Network.kmz"))
+
+        if base_can_src:
+            shutil.copyfile(base_can_src, os.path.join(TMP_DIR, "Transmission Network Canalizado.kmz"))
+
+    # general = solo base general (aéreo)
+    elif mode == "general":
+        if not base_src:
+            raise HTTPException(500, "No se encontró la base general (aérea).")
+        shutil.copyfile(base_src, os.path.join(TMP_DIR, "Transmission Network.kmz"))
+
+    # canalizado = usar solo canalizado como base principal
+    elif mode == "canalizado":
+        if not base_can_src:
+            raise HTTPException(500, "No se encontró la base canalizada.")
+        shutil.copyfile(base_can_src, os.path.join(TMP_DIR, "Transmission Network.kmz"))
 
 
     script_src = os.path.join(APP_DIR, "informative-letters-v3.py")
