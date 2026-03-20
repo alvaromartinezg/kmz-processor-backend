@@ -113,7 +113,7 @@ async def process_kmz(
             listing = ", ".join(sorted(os.listdir(APP_DIR)))
             raise HTTPException(500, f"No se encontró la base canalizada. Archivos en raíz: {listing}")
 
-        shutil.copyfile(base_can_src, os.path.join(TMP_DIR, "Transmission Network.kmz"))
+        shutil.copyfile(base_can_src, os.path.join(TMP_DIR, "Transmission Network Canalizado.kmz"))
 
     script_src = os.path.join(APP_DIR, "informative-letters-v3.py")
     if not os.path.exists(script_src):
