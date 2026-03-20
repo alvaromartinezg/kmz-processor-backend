@@ -506,7 +506,7 @@ def filter_and_clip_lines_near_ref(lines, ref_lines, near_m):
     return selected
 
 # -------------- Exportar KMZ con estilos y polígonos --------------
-def write_kmz(lines, polygons, out_path, highlight_lines=None, canalizado_lines=None):
+def write_kmz(lines, polygons, out_path, highlight_lines=None, canalizado_lines=None, base_lines_are_canalizado=False):
     # Estilos:
     kml = ET.Element("kml", xmlns=NS["kml"])
     doc = ET.SubElement(kml,"Document")
@@ -566,10 +566,17 @@ def write_kmz(lines, polygons, out_path, highlight_lines=None, canalizado_lines=
             ET.SubElement(ls,"coordinates").text = coords_to_text([(lon,lat,0.0) for lon,lat in pts])
 
     # Líneas recortadas (seleccionadas)
+        # Líneas recortadas (seleccionadas)
     for idx, (_orig_name, pts) in enumerate(lines, start=1):
         pm = ET.SubElement(doc,"Placemark")
-        ET.SubElement(pm,"name").text = f"fibra optica aerea  {idx}"
-        ET.SubElement(pm,"styleUrl").text = "#lineBlue"
+
+        if base_lines_are_canalizado:
+            ET.SubElement(pm,"name").text = f"fibra optica canalizada {idx}"
+            ET.SubElement(pm,"styleUrl").text = "#lineGreen"
+        else:
+            ET.SubElement(pm,"name").text = f"fibra optica aerea  {idx}"
+            ET.SubElement(pm,"styleUrl").text = "#lineBlue"
+
         ls = ET.SubElement(pm,"LineString")
         ET.SubElement(ls,"coordinates").text = coords_to_text([(lon,lat,0.0) for lon,lat in pts])
 
@@ -602,7 +609,7 @@ def has_real_output(clipped, clipped_canal=None):
 
 # =========================== MAIN ===========================
 def main():
-        # Evitar reutilizar un Exportado.kmz viejo
+    # Evitar reutilizar un Exportado.kmz viejo
     if os.path.exists(OUTPUT_NAME):
         try:
             os.remove(OUTPUT_NAME)
@@ -611,12 +618,24 @@ def main():
 
     input_path = find_input_path()
     if not input_path:
-        print("No se encontró TEST.kmz ni TEST.kml en esta carpeta."); sys.exit(0)
-    base_kmz = find_base_kmz()
-    if not base_kmz:
-        print("No se encontró ningún KMZ tipo 'Transmission Network' en esta carpeta."); sys.exit(0)
+        print("No se encontró TEST.kmz ni TEST.kml en esta carpeta.")
+        sys.exit(0)
 
+    base_kmz = find_base_kmz()
     base_kmz_canal = find_canalizado_kmz()
+    base_kmz_is_canalizado = False
+
+    # Fallback: si falta la principal, usar la canalizada como base
+    if not base_kmz and base_kmz_canal:
+        print("[AVISO] No se encontró base principal. Se usará la base canalizada como respaldo.")
+        base_kmz = base_kmz_canal
+        base_kmz_canal = None   # evita procesarla dos veces
+        base_kmz_is_canalizado = True
+
+    # Si no existe ninguna base, detener
+    if not base_kmz and not base_kmz_canal:
+        print("No se encontró ningún KMZ tipo 'Transmission Network' en esta carpeta.")
+        sys.exit(0)
 
     print(f"[INFO] Input: {input_path}")
     print(f"[INFO] Base:  {base_kmz}")
@@ -626,13 +645,12 @@ def main():
 
     # 1) Leer TODO del input (en todos los .kml internos):
     ref_lines      = read_lines_from_input(input_path)               # todas las LineString del TEST
-    closed_polys   = close_lines_to_polys(ref_lines, CLOSE_THRESHOLD_M)  # polígonos creados desde líneas (≤50 m)
-    existing_polys = read_polygons_only_from_input(input_path)       # polígonos que ya vienen en TEST
+    closed_polys   = close_lines_to_polys(ref_lines, CLOSE_THRESHOLD_M)
+    existing_polys = read_polygons_only_from_input(input_path)
 
     print(f"[INFO] Input trae: lineas={len(ref_lines)} | poligonos_existentes={len(existing_polys)} | lineas_cerrables→poligonos={len(closed_polys)}")
 
-    # 2) Usar SIEMPRE todas las áreas de impacto disponibles:
-    #    - Unimos los polígonos existentes + los generados desde líneas cerrables.
+    # 2) Unir todas las áreas de impacto
     polys = []
     polys.extend(existing_polys)
     polys.extend(closed_polys)
@@ -640,7 +658,7 @@ def main():
     if polys:
         print(f"[INFO] Usando {len(polys)} área(s) de impacto (existentes + derivadas de líneas).")
         print("[INFO] Leyendo líneas del KMZ base…")
-        lines = read_lines_from_kmz(base_kmz)   # anti-microondas activo
+        lines = read_lines_from_kmz(base_kmz, skip_two_points=not base_kmz_is_canalizado)   # anti-microondas activo
         print(f"[INFO] Total líneas en base: {len(lines)}")
 
         print(f"[INFO] Filtrando y recortando a ≤{NEAR_M} m del(los) área(s) de impacto…")
@@ -649,7 +667,7 @@ def main():
         clipped      = clipped_poly + clipped_ref
         print(f"[OK] Tramos seleccionados (base): {len(clipped)}")
 
-        # NUEVO: procesar base canalizada si existe
+        # Procesar base canalizada si existe
         clipped_canal = []
         if base_kmz_canal:
             print("[INFO] Leyendo líneas del KMZ base CANALIZADA…")
@@ -660,33 +678,32 @@ def main():
             clipped_canal  = clipped_poly_c + clipped_ref_c
             print(f"[OK] Tramos seleccionados (canalizada): {len(clipped_canal)}")
 
-        # Exportar ambas capas (negra + verde)
-                # Si no hay líneas reales, no exportar aunque exista polígono
+        # Si no hay líneas reales, no exportar aunque exista polígono
         if not has_real_output(clipped, clipped_canal):
             print("[EMPTY] No encontro nada para exportar.")
             return 2
 
-        # Exportar ambas capas (negra + verde)
+        # Exportar ambas capas
         write_kmz(
             clipped, polys, OUTPUT_NAME,
             highlight_lines=ref_lines if ref_lines else None,
-            canalizado_lines=clipped_canal if clipped_canal else None
+            canalizado_lines=clipped_canal if clipped_canal else None,
+            base_lines_are_canalizado=base_kmz_is_canalizado
         )
         print(f"[OK] Exportado: {OUTPUT_NAME}")
         return 0
 
-    # 3) Si no hay polígonos de ningún tipo, usar la(s) LÍNEA(s) de entrada como referencia (fallback)
+    # 3) Si no hay polígonos, usar las líneas de entrada como referencia
     if ref_lines:
         print("[AVISO] No hay polígonos; usaré la(s) LÍNEA(s) de entrada como referencia.")
         print("[INFO] Leyendo líneas del KMZ base…")
-        lines = read_lines_from_kmz(base_kmz)
+        lines = read_lines_from_kmz(base_kmz, skip_two_points=not base_kmz_is_canalizado)
         print(f"[INFO] Total líneas en base: {len(lines)}")
 
         print(f"[INFO] Filtrando y recortando a ≤{NEAR_M} m de la(s) línea(s) de entrada…")
         clipped = filter_and_clip_lines_near_ref(lines, ref_lines, NEAR_M)
         print(f"[OK] Tramos seleccionados (base): {len(clipped)}")
 
-        # NUEVO: procesar base canalizada si existe
         clipped_canal = []
         if base_kmz_canal:
             print("[INFO] Leyendo líneas del KMZ base CANALIZADA…")
@@ -695,23 +712,23 @@ def main():
             clipped_canal = filter_and_clip_lines_near_ref(lines_canal, ref_lines, NEAR_M)
             print(f"[OK] Tramos seleccionados (canalizada): {len(clipped_canal)}")
 
-        # Exporta: highlight de entrada + capas recortadas
-                # Si no hay líneas reales, no exportar
+        # Si no hay líneas reales, no exportar
         if not has_real_output(clipped, clipped_canal):
             print("[EMPTY] No encontro nada para exportar.")
             return 2
 
-        # Exporta: highlight de entrada + capas recortadas
+        # Exportar
         write_kmz(
             clipped, [], OUTPUT_NAME,
             highlight_lines=ref_lines,
-            canalizado_lines=clipped_canal if clipped_canal else None
+            canalizado_lines=clipped_canal if clipped_canal else None,
+            base_lines_are_canalizado=base_kmz_is_canalizado
         )
         print(f"[OK] Exportado: {OUTPUT_NAME}")
         return 0
 
-    print("[ERROR] El input no contiene polígonos ni líneas utilizables."); sys.exit(0)
-
+    print("[ERROR] El input no contiene polígonos ni líneas utilizables.")
+    sys.exit(0)
 
 if __name__=="__main__":
     rc = main()
