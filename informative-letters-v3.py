@@ -597,8 +597,18 @@ def read_all_kml_roots(path):
             roots.append(safe_parse_kml(f.read()))
     return roots
 
+def has_real_output(clipped, clipped_canal=None):
+    return bool(clipped) or bool(clipped_canal)
+
 # =========================== MAIN ===========================
 def main():
+        # Evitar reutilizar un Exportado.kmz viejo
+    if os.path.exists(OUTPUT_NAME):
+        try:
+            os.remove(OUTPUT_NAME)
+        except Exception:
+            pass
+
     input_path = find_input_path()
     if not input_path:
         print("No se encontró TEST.kmz ni TEST.kml en esta carpeta."); sys.exit(0)
@@ -651,13 +661,19 @@ def main():
             print(f"[OK] Tramos seleccionados (canalizada): {len(clipped_canal)}")
 
         # Exportar ambas capas (negra + verde)
+                # Si no hay líneas reales, no exportar aunque exista polígono
+        if not has_real_output(clipped, clipped_canal):
+            print("[EMPTY] No encontro nada para exportar.")
+            return 2
+
+        # Exportar ambas capas (negra + verde)
         write_kmz(
             clipped, polys, OUTPUT_NAME,
             highlight_lines=ref_lines if ref_lines else None,
             canalizado_lines=clipped_canal if clipped_canal else None
         )
         print(f"[OK] Exportado: {OUTPUT_NAME}")
-        return
+        return 0
 
     # 3) Si no hay polígonos de ningún tipo, usar la(s) LÍNEA(s) de entrada como referencia (fallback)
     if ref_lines:
@@ -680,20 +696,25 @@ def main():
             print(f"[OK] Tramos seleccionados (canalizada): {len(clipped_canal)}")
 
         # Exporta: highlight de entrada + capas recortadas
+                # Si no hay líneas reales, no exportar
+        if not has_real_output(clipped, clipped_canal):
+            print("[EMPTY] No encontro nada para exportar.")
+            return 2
+
+        # Exporta: highlight de entrada + capas recortadas
         write_kmz(
             clipped, [], OUTPUT_NAME,
             highlight_lines=ref_lines,
             canalizado_lines=clipped_canal if clipped_canal else None
         )
         print(f"[OK] Exportado: {OUTPUT_NAME}")
-        return
-
+        return 0
 
     print("[ERROR] El input no contiene polígonos ni líneas utilizables."); sys.exit(0)
 
 
 if __name__=="__main__":
-    main()
-
+    rc = main()
+    sys.exit(rc if isinstance(rc, int) else 0)
 
 
