@@ -1,20 +1,23 @@
 # main.py (raíz)
-import os, shutil, subprocess, uuid
-from fastapi import FastAPI, UploadFile, File, HTTPException
+import os
+import shutil
+import subprocess
+import uuid
+
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from fastapi.responses import FileResponse, PlainTextResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 
-APP_DIR = os.path.dirname(os.path.abspath(__file__))  # ← raíz del repo dentro del contenedor
-TMP_DIR = "/tmp"  # Cloud Run: carpeta escribible
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+TMP_DIR = "/tmp"
 
 app = FastAPI(title="KMZ Processor")
 
-# CORS robusto: acepta preflight de cualquier método y expone Content-Disposition
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],              # o limita a tu GitHub Pages
+    allow_origins=["*"],
     allow_credentials=False,
-    allow_methods=["*"],              # evita 405 en OPTIONS
+    allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["Content-Disposition"],
 )
@@ -23,38 +26,36 @@ app.add_middleware(
 def health():
     return "ok"
 
-# --- nuevo: buscador de base canalizada
-def _find_canalizado_kmz() -> str | None:
-    for name in ["Database_Canalizado.kmz", "DATABASE_CANALIZADO.kmz", "Transmission Network Canalizado.kmz"]:
-        p = os.path.join(APP_DIR, name)
-        if os.path.exists(p):
-            return p
-    return None
-
-# Respuesta explícita para cualquier OPTIONS (por si un proxy ignora el middleware)
 @app.options("/{path:path}")
 def options_any(path: str):
     return Response(status_code=204)
 
-def _find_base_kmz() -> str:
-    # En tu repo el nombre es exactamente 'Database.kmz'
+def _find_base_kmz() -> str | None:
     candidates = ["Database.kmz", "DATABASE.kmz", "Transmission Network.kmz"]
     for name in candidates:
         p = os.path.join(APP_DIR, name)
         if os.path.exists(p):
             return p
-    listing = ", ".join(sorted(os.listdir(APP_DIR)))
-    raise HTTPException(500, f"No se encontró el KMZ base. Archivos en raíz: {listing}")
+    return None
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Form
+def _find_canalizado_kmz() -> str | None:
+    candidates = [
+        "Database_Canalizado.kmz",
+        "DATABASE_CANALIZADO.kmz",
+        "Transmission Network Canalizado.kmz",
+    ]
+    for name in candidates:
+        p = os.path.join(APP_DIR, name)
+        if os.path.exists(p):
+            return p
+    return None
+
 @app.post("/process")
 async def process_kmz(
     test_kmz: UploadFile = File(None),
     file: UploadFile = File(None),
-    mode: str = Form("both")
+    mode: str = Form("both"),
 ):
-async def process_kmz(test_kmz: UploadFile = File(None), file: UploadFile = File(None)):
-    # Acepta ambos nombres de campo (tu web nueva usa 'test_kmz'; otras podrían usar 'file')
     f = test_kmz or file
     if not f:
         raise HTTPException(400, "Esperaba archivo en 'test_kmz' o 'file'.")
@@ -63,28 +64,25 @@ async def process_kmz(test_kmz: UploadFile = File(None), file: UploadFile = File
     if not (name.endswith(".kmz") or name.endswith(".kml")):
         raise HTTPException(400, "Sube un .kmz o .kml válido.")
 
-    # Limpia /tmp
-        for n in (
+    for n in (
         "TEST.kmz",
         "TEST.kml",
         "Transmission Network.kmz",
         "Transmission Network Canalizado.kmz",
         "Exportado.kmz",
-        "informative-letters-v3.py"
+        "informative-letters-v3.py",
     ):
         p = os.path.join(TMP_DIR, n)
         try:
             if os.path.exists(p):
                 os.remove(p)
-        except:
+        except Exception:
             pass
 
-    # Guarda TEST.* en /tmp
     test_dest = os.path.join(TMP_DIR, "TEST.kmz" if name.endswith(".kmz") else "TEST.kml")
     with open(test_dest, "wb") as out:
         out.write(await f.read())
 
-    # Normalizar modo recibido desde frontend
     mode = (mode or "both").strip().lower()
     if mode not in {"both", "general", "canalizado"}:
         raise HTTPException(400, f"Modo inválido: {mode}")
@@ -92,10 +90,10 @@ async def process_kmz(test_kmz: UploadFile = File(None), file: UploadFile = File
     base_src = _find_base_kmz()
     base_can_src = _find_canalizado_kmz()
 
-    # both = base general + canalizado
     if mode == "both":
         if not base_src and not base_can_src:
-            raise HTTPException(500, "No se encontró ninguna base KMZ en el contenedor.")
+            listing = ", ".join(sorted(os.listdir(APP_DIR)))
+            raise HTTPException(500, f"No se encontró ninguna base KMZ en el contenedor. Archivos en raíz: {listing}")
 
         if base_src:
             shutil.copyfile(base_src, os.path.join(TMP_DIR, "Transmission Network.kmz"))
@@ -103,32 +101,43 @@ async def process_kmz(test_kmz: UploadFile = File(None), file: UploadFile = File
         if base_can_src:
             shutil.copyfile(base_can_src, os.path.join(TMP_DIR, "Transmission Network Canalizado.kmz"))
 
-    # general = solo base general (aéreo)
     elif mode == "general":
         if not base_src:
-            raise HTTPException(500, "No se encontró la base general (aérea).")
+            listing = ", ".join(sorted(os.listdir(APP_DIR)))
+            raise HTTPException(500, f"No se encontró la base general (aérea). Archivos en raíz: {listing}")
+
         shutil.copyfile(base_src, os.path.join(TMP_DIR, "Transmission Network.kmz"))
 
-    # canalizado = usar solo canalizado como base principal
     elif mode == "canalizado":
         if not base_can_src:
-            raise HTTPException(500, "No se encontró la base canalizada.")
-        shutil.copyfile(base_can_src, os.path.join(TMP_DIR, "Transmission Network.kmz"))
+            listing = ", ".join(sorted(os.listdir(APP_DIR)))
+            raise HTTPException(500, f"No se encontró la base canalizada. Archivos en raíz: {listing}")
 
+        shutil.copyfile(base_can_src, os.path.join(TMP_DIR, "Transmission Network.kmz"))
 
     script_src = os.path.join(APP_DIR, "informative-letters-v3.py")
     if not os.path.exists(script_src):
         raise HTTPException(500, "Falta informative-letters-v3.py en el contenedor")
+
     shutil.copyfile(script_src, os.path.join(TMP_DIR, "informative-letters-v3.py"))
 
-    # Ejecuta el script (debe generar Exportado.kmz en /tmp)
     try:
-        subprocess.run(
+        result = subprocess.run(
             ["python3", "informative-letters-v3.py"],
-            cwd=TMP_DIR, check=True, capture_output=True, text=True
+            cwd=TMP_DIR,
+            check=False,
+            capture_output=True,
+            text=True,
         )
-    except subprocess.CalledProcessError as e:
-        logs = (e.stderr or e.stdout or "").strip()
+    except Exception as e:
+        raise HTTPException(500, f"Error al ejecutar el script: {e}")
+
+    logs = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
+
+    if result.returncode == 2 or "[EMPTY]" in logs:
+        return Response(status_code=204)
+
+    if result.returncode != 0:
         raise HTTPException(500, f"Error al procesar:\n{logs}")
 
     out_path = os.path.join(TMP_DIR, "Exportado.kmz")
